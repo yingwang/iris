@@ -104,12 +104,12 @@ export class AvatarStage {
     const coreModel = this.model.internalModel?.coreModel;
     if (!coreModel || !coreModel.setParameterValueById) return;
 
-    // Live2D standard parameter ids. Haru uses these; most Cubism 4
-    // models do. If a parameter doesn't exist, setParameterValueById
-    // is a no-op on this model.
+    // We only override the mouth parameter for lip sync. The mouth
+    // form (smile) is left to the model's own idle/breath animation
+    // so Iris has her own neutral resting expression instead of
+    // mimicking the user's face.
     try {
       coreModel.setParameterValueById("ParamMouthOpenY", this.externalMouth);
-      coreModel.setParameterValueById("ParamMouthForm", this.externalSmile);
     } catch (_) {}
   }
 

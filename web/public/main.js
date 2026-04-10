@@ -119,18 +119,6 @@ async function enqueueTtsAudio(base64) {
   if (!playing) pumpPlayQueue();
 }
 
-// Also let main.js update the avatar expression based on the user's
-// face — not just the mouth corners, but a named expression trigger
-// when the user's mood changes noticeably.
-let lastExpressionLabel = "neutral";
-setInterval(() => {
-  if (!faceTracker || !avatarStage?.ready) return;
-  const snap = faceTracker.snapshot();
-  if (snap.label !== lastExpressionLabel) {
-    lastExpressionLabel = snap.label;
-    avatarStage.setExpression(snap.label);
-  }
-}, 300);
 
 // WebAudio playback: reliable. We route through an AnalyserNode so we
 // can read RMS for lip-sync. The analyser is shared across sentences
@@ -307,8 +295,11 @@ async function initFace() {
     faceDebugEl.textContent = "face: loading mediapipe…";
     await faceTracker.start();
     faceDebugEl.textContent = "face: running";
-    // Debug readout + mirror user expression onto the avatar: if you
-    // smile, iris smiles back (subtly).
+    // The tracker is used PURELY as input to Claude — we no longer
+    // mirror the user's expression onto the avatar, because then
+    // Iris would just be a copy of your face. She keeps her own
+    // idle expression + lip sync when she speaks. The debug overlay
+    // still shows the live snapshot so you can tell tracking works.
     setInterval(() => {
       if (!faceTracker) return;
       const snap = faceTracker.snapshot();
@@ -316,9 +307,6 @@ async function initFace() {
         `face: ${snap.label} · smile ${snap.smile.toFixed(2)}` +
         ` browUp ${snap.browUp.toFixed(2)} eyes ${snap.eyesClosed.toFixed(2)}` +
         (snap.looking ? "" : " · NO FACE");
-      if (avatarStage?.ready) {
-        avatarStage.setSmile(0.5 + snap.smile * 0.5);
-      }
     }, 80);
   } catch (err) {
     console.error("face tracking unavailable:", err);
