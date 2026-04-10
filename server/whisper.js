@@ -32,6 +32,60 @@ const WHISPER_MODEL =
  * @param {string} [opts.language="auto"]  whisper language code or "auto"
  * @param {number} [opts.threads=4]
  */
+async function runWhisper(wavPath, outBase, language, threads) {
+  const args = [
+    "-m",
+    WHISPER_MODEL,
+    "-f",
+    wavPath,
+    "-l",
+    language,
+    "-t",
+    String(threads),
+    "--no-timestamps",
+    "--output-txt",
+    "--output-file",
+    outBase,
+  ];
+  if (language === "zh") {
+    args.push("--prompt", "以下是普通话的句子，请使用简体中文。");
+  }
+  await new Promise((resolve, reject) => {
+    const child = spawn(WHISPER_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`whisper exited ${code}: ${stderr.slice(-500)}`));
+    });
+  });
+  const text = await readFile(`${outBase}.txt`, "utf8");
+  return text.trim();
+}
+
+/**
+ * iris only supports English and Simplified Chinese. Whisper's auto
+ * language ID is happy to return Korean / Japanese / German / etc. on
+ * short noisy clips, which then sends garbage to Claude. We post-
+ * validate: if the transcription contains characters outside the
+ * English or Chinese writing systems, re-run with a forced language.
+ */
+function classifyScript(text) {
+  // CJK unified ideographs + CJK punctuation → Chinese
+  if (/[\u4e00-\u9fff\u3000-\u303f]/.test(text)) return "zh";
+  // Hangul (Korean) → reject
+  if (/[\uac00-\ud7af\u1100-\u11ff]/.test(text)) return "other";
+  // Hiragana / Katakana (Japanese) → reject
+  if (/[\u3040-\u309f\u30a0-\u30ff]/.test(text)) return "other";
+  // Cyrillic (Russian etc.) → reject
+  if (/[\u0400-\u04ff]/.test(text)) return "other";
+  // Arabic → reject
+  if (/[\u0600-\u06ff]/.test(text)) return "other";
+  // Default: ASCII/Latin → English (close enough)
+  return "en";
+}
+
 export async function transcribe(wavBuffer, { language = "auto", threads = 4 } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "iris-stt-"));
   const wavPath = join(dir, "in.wav");
@@ -40,42 +94,19 @@ export async function transcribe(wavBuffer, { language = "auto", threads = 4 } =
   try {
     await writeFile(wavPath, wavBuffer);
 
-    const args = [
-      "-m",
-      WHISPER_MODEL,
-      "-f",
-      wavPath,
-      "-l",
-      language,
-      "-t",
-      String(threads),
-      "--no-timestamps",
-      "--output-txt",
-      "--output-file",
-      outBase,
-    ];
+    let text = await runWhisper(wavPath, outBase, language, threads);
 
-    // Only bias toward Simplified Chinese when we know the user is
-    // speaking Chinese. An "auto" prompt bias would force Chinese on
-    // English speech too, which is worse than the Traditional-vs-
-    // Simplified issue we were trying to fix.
-    if (language === "zh" || language === "zh-cn") {
-      args.push("--prompt", "以下是普通话的句子，请使用简体中文。");
+    // If the caller asked for auto, validate the detected script and
+    // force a retry in English when whisper picked a non-en/zh
+    // language. Re-running is ~1 s on tiny.bin which is acceptable.
+    if ((language === "auto") && text) {
+      const kind = classifyScript(text);
+      if (kind === "other") {
+        text = await runWhisper(wavPath, outBase, "en", threads);
+      }
     }
 
-    await new Promise((resolve, reject) => {
-      const child = spawn(WHISPER_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
-      let stderr = "";
-      child.stderr.on("data", (d) => (stderr += d.toString()));
-      child.on("error", reject);
-      child.on("close", (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`whisper exited ${code}: ${stderr.slice(-500)}`));
-      });
-    });
-
-    const text = await readFile(`${outBase}.txt`, "utf8");
-    return text.trim();
+    return text;
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

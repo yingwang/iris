@@ -33,15 +33,17 @@ export class VADRecorder {
 
   async start() {
     this.vad = await MicVAD.new({
-      // Silero model params — tuned for low latency. Cutting redemption
-      // frames from 20 to 10 halves the silence iris has to wait through
-      // before she starts processing, at the cost of occasionally
-      // cutting off a long mid-sentence pause.
-      positiveSpeechThreshold: 0.6,
-      negativeSpeechThreshold: 0.4,
-      minSpeechFrames: 3, // ~90 ms of speech required to count
+      // Silero params tuned for a live video-call feel that doesn't
+      // get tripped by background noise or TTS echo. Bumping
+      // positiveSpeechThreshold and minSpeechFrames makes false
+      // interruptions much rarer; a small cough or the last syllable
+      // of iris's own sentence leaking through echo cancellation no
+      // longer counts as "the user just started talking".
+      positiveSpeechThreshold: 0.75,
+      negativeSpeechThreshold: 0.5,
+      minSpeechFrames: 8, // ~240 ms of sustained speech required
       preSpeechPadFrames: 8, // ~240 ms of lead-in audio captured
-      redemptionFrames: 10, // ~300 ms of silence ends the utterance
+      redemptionFrames: 12, // ~360 ms of silence ends the utterance
 
       onSpeechStart: () => {
         if (this.paused) return;

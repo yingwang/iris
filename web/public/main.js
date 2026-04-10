@@ -162,6 +162,7 @@ async function pumpPlayQueue() {
   if (playing) return;
   playing = true;
   ttsSpeaking = true;
+  ttsStartedAt = Date.now();
   // We used to mute the mic here, but the user asked for voice
   // interrupt, so we now leave the VAD running. getUserMedia's
   // built-in echoCancellation handles most of the feedback; the
@@ -256,14 +257,29 @@ let faceTracker = null;
 let avatarStage = null;
 let ttsSpeaking = false;
 
+// When did the current TTS playback start? Used to gate the interrupt
+// grace period so tiny echoes in the first second of iris talking
+// don't barge-in and kill the turn.
+let ttsStartedAt = 0;
+const INTERRUPT_GRACE_MS = 1000;
+
 async function initVoice() {
   try {
     vadRecorder = new VADRecorder({
       onSpeechStart: () => {
-        // If iris is in the middle of speaking, treat this as an
-        // interrupt: stop her audio, clear the queue, and tell the
-        // server to kill the in-flight Claude stream.
-        if (playing) interruptIris();
+        // If iris is in the middle of speaking, treat as a possible
+        // interrupt — but only after a grace window. The first ~1 s
+        // of her speech has the highest echo leak through the
+        // built-in cancellation, and a stray fragment would otherwise
+        // instantly kill the turn.
+        if (playing) {
+          const sinceStart = Date.now() - ttsStartedAt;
+          if (sinceStart < INTERRUPT_GRACE_MS) {
+            // Ignore — likely echo. Discard the speech segment.
+            return;
+          }
+          interruptIris();
+        }
         statusEl.textContent = "listening…";
         micBtn.classList.add("recording");
       },
