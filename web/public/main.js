@@ -1,10 +1,14 @@
 /**
  * iris — browser entry.
  *
- * Milestone 1 (this file): text chat over WebSocket streams from Claude CLI.
- * Next milestones add: webcam preview, Live2D avatar, Web Audio recording,
- * Whisper STT (WASM or server), Piper TTS playback, MediaPipe tracking.
+ * Milestones wired so far:
+ *   M1 text chat streaming over WebSocket
+ *   M3 voice input: MediaRecorder → 16 kHz WAV → server whisper.cpp
+ *
+ * Not yet: Live2D avatar, Piper TTS playback, MediaPipe tracking.
  */
+
+import { AudioRecorder, blobToBase64 } from "/audio.js";
 
 const statusEl = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
@@ -48,6 +52,16 @@ function connect() {
 
 function handleServerMessage(msg) {
   switch (msg.type) {
+    case "stt_started":
+      statusEl.textContent = "transcribing…";
+      break;
+    case "stt_result":
+      appendBubble("user", msg.text);
+      statusEl.textContent = "iris is thinking…";
+      break;
+    case "stt_empty":
+      statusEl.textContent = "couldn't hear you — try again";
+      break;
     case "assistant_chunk":
       if (!currentAssistantBubble) currentAssistantBubble = appendBubble("assistant", "");
       currentAssistantBubble.textContent += msg.text;
@@ -81,7 +95,20 @@ function sendText(text) {
   ws.send(JSON.stringify({ type: "user_text", text }));
 }
 
-// --- UI events ----------------------------------------------------------
+async function sendAudio(wavBlob) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!wavBlob || wavBlob.size < 200) {
+    statusEl.textContent = "recording too short";
+    return;
+  }
+  const data = await blobToBase64(wavBlob);
+  // Hint whisper about the primary language; "auto" also works.
+  const language = (navigator.language || "").startsWith("zh") ? "zh" : "auto";
+  statusEl.textContent = "uploading audio…";
+  ws.send(JSON.stringify({ type: "user_audio", data, language }));
+}
+
+// --- form submit --------------------------------------------------------
 
 form.addEventListener("submit", (ev) => {
   ev.preventDefault();
@@ -91,122 +118,69 @@ form.addEventListener("submit", (ev) => {
   input.value = "";
 });
 
-// --- voice input (push-to-talk via Web Speech API) ----------------------
-//
-// Temporary M3: use the browser's built-in SpeechRecognition. It's less
-// accurate than Whisper and needs a network round-trip to Google for
-// Chrome, but it avoids installing whisper.cpp to get something working
-// today. Real Whisper integration lands next.
+// --- voice: record actual audio and let the server transcribe ----------
 
-const SpeechRecognition =
-  window.SpeechRecognition || window.webkitSpeechRecognition;
-let recognition = null;
-let recognizing = false;
-let recognitionFinalText = "";
+let recorder = null;
+let recording = false;
 
-function initRecognition() {
-  if (!SpeechRecognition) {
-    micBtn.disabled = true;
-    micBtn.title = "SpeechRecognition not supported (try Chrome)";
-    return;
-  }
-  recognition = new SpeechRecognition();
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  // Match the user's browser language by default; fall back to zh-CN.
-  recognition.lang = (navigator.language || "zh-CN").startsWith("zh")
-    ? "zh-CN"
-    : "en-US";
-
-  recognition.onresult = (ev) => {
-    let interim = "";
-    recognitionFinalText = "";
-    for (let i = 0; i < ev.results.length; i++) {
-      const r = ev.results[i];
-      if (r.isFinal) recognitionFinalText += r[0].transcript;
-      else interim += r[0].transcript;
-    }
-    input.value = recognitionFinalText + interim;
-  };
-
-  recognition.onerror = (ev) => {
-    statusEl.textContent = `mic error: ${ev.error}`;
-    stopRecognition(false);
-  };
-
-  recognition.onend = () => {
-    if (recognizing) {
-      // unexpected end — stop UI
-      stopRecognition(false);
-    }
-  };
-}
-
-function startRecognition() {
-  if (!recognition || recognizing) return;
-  recognizing = true;
-  recognitionFinalText = "";
-  input.value = "";
-  micBtn.classList.add("recording");
-  statusEl.textContent = "listening…";
+async function startRecording() {
+  if (recording) return;
   try {
-    recognition.start();
+    recorder = new AudioRecorder();
+    await recorder.start();
+    recording = true;
+    micBtn.classList.add("recording");
+    statusEl.textContent = "listening…";
   } catch (err) {
-    // Some browsers throw if start() is called too fast after stop()
-    console.warn(err);
-    recognizing = false;
-    micBtn.classList.remove("recording");
+    console.error(err);
+    statusEl.textContent = `mic error: ${err.message || err.name}`;
+    recorder = null;
   }
 }
 
-function stopRecognition(shouldSend) {
-  if (!recognition) return;
-  const wasRecognizing = recognizing;
-  recognizing = false;
+async function stopRecording(shouldSend) {
+  if (!recording || !recorder) return;
+  recording = false;
   micBtn.classList.remove("recording");
   try {
-    recognition.stop();
-  } catch {}
-  if (!wasRecognizing) return;
-  const text = input.value.trim();
-  if (shouldSend && text) {
-    sendText(text);
-    input.value = "";
-    recognitionFinalText = "";
-  } else {
-    statusEl.textContent = "ready";
+    const wavBlob = await recorder.stop();
+    if (shouldSend && wavBlob) await sendAudio(wavBlob);
+    else statusEl.textContent = "ready";
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = `recorder error: ${err.message || err.name}`;
+  } finally {
+    recorder = null;
   }
 }
 
 // Mic button: press-and-hold to record, release to send.
 micBtn.addEventListener("pointerdown", (ev) => {
   ev.preventDefault();
-  startRecognition();
+  startRecording();
 });
-micBtn.addEventListener("pointerup", () => stopRecognition(true));
-micBtn.addEventListener("pointercancel", () => stopRecognition(false));
+micBtn.addEventListener("pointerup", () => stopRecording(true));
+micBtn.addEventListener("pointercancel", () => stopRecording(false));
 micBtn.addEventListener("pointerleave", () => {
-  if (recognizing) stopRecognition(true);
+  if (recording) stopRecording(true);
 });
 
-// Space bar: hold to record, release to send — but only when focus
-// isn't in the text input (otherwise Space should insert a space).
+// Space bar: hold to record, release to send — only when focus is
+// outside the text input (otherwise Space inserts a space).
 window.addEventListener("keydown", (ev) => {
   if (ev.code !== "Space" || ev.repeat) return;
   if (document.activeElement === input) return;
   ev.preventDefault();
-  startRecognition();
+  startRecording();
 });
 window.addEventListener("keyup", (ev) => {
   if (ev.code !== "Space") return;
   if (document.activeElement === input) return;
   ev.preventDefault();
-  stopRecognition(true);
+  stopRecording(true);
 });
 
-initRecognition();
-
-// --- webcam (self-view only for now; MediaPipe tracking lands later) ----
+// --- webcam (self-view only for now) ------------------------------------
 
 async function initWebcam() {
   try {

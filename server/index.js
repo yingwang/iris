@@ -22,6 +22,7 @@ import fastifyStatic from "@fastify/static";
 import fastifyWebsocket from "@fastify/websocket";
 
 import { ClaudeSession } from "./claude.js";
+import { transcribe, whisperAvailable } from "./whisper.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3000);
@@ -61,6 +62,28 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       return;
     }
 
+    if (msg.type === "user_audio" && typeof msg.data === "string") {
+      try {
+        const wav = Buffer.from(msg.data, "base64");
+        send({ type: "stt_started" });
+        const text = await transcribe(wav, { language: msg.language ?? "auto" });
+        if (!text) {
+          send({ type: "stt_empty" });
+          return;
+        }
+        send({ type: "stt_result", text });
+
+        for await (const chunk of session.send(text)) {
+          send({ type: "assistant_chunk", text: chunk });
+        }
+        send({ type: "assistant_end" });
+      } catch (err) {
+        app.log.error(err);
+        send({ type: "error", message: err.message || String(err) });
+      }
+      return;
+    }
+
     send({ type: "error", message: `unknown message type: ${msg.type}` });
   });
 
@@ -69,6 +92,12 @@ app.get("/ws", { websocket: true }, (socket, req) => {
   });
 });
 
+const hasWhisper = await whisperAvailable();
+if (!hasWhisper) {
+  app.log.warn("whisper binary or model missing — voice input will fail");
+}
+
 app.listen({ port: PORT, host: "127.0.0.1" }).then(() => {
-  console.log(`\n  iris server running at http://localhost:${PORT}\n`);
+  console.log(`\n  iris server running at http://localhost:${PORT}`);
+  console.log(`  whisper: ${hasWhisper ? "ready" : "missing"}\n`);
 });

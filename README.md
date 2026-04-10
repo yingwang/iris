@@ -24,26 +24,49 @@ Status: **early scaffolding** — only text chat streaming works today. Roadmap 
 ## Roadmap
 
 - [x] M1 — text chat: WebSocket → Claude Code CLI → streaming text back to browser
+- [x] M3 — voice in: mic capture → WAV encode → server whisper.cpp → text → Claude
 - [ ] M2 — webcam preview + MediaPipe Holistic tracking (user face only)
-- [ ] M3 — voice in: mic capture → Whisper local → send text to server
 - [ ] M4 — voice out: Piper TTS on server → stream wav to browser → Web Audio playback
 - [ ] M5 — Live2D avatar: load a free model, basic idle animation
 - [ ] M6 — lip sync: drive mouth params from TTS audio amplitude / phonemes
 - [ ] M7 — expressions: map MediaPipe face blendshapes onto Live2D parameters
 
-## Running today (M1)
+## Running today (M1 + M3)
 
 Prereqs:
 - Node 20+
 - `claude` CLI installed and logged in (`claude` works in your terminal)
+- Xcode Command Line Tools (for building whisper.cpp)
+- CMake
 
 ```bash
+# 1. Build whisper.cpp and download the base model (~142 MB)
+./scripts/install-whisper.sh
+
+# 2. Install node deps
 npm install
+
+# 3. Start the server
 npm run dev
 # open http://localhost:3000
 ```
 
-Type in the chat box — the server spawns `claude -p` with a streaming session, forwards text back over the WebSocket. Same session id across turns so conversation context is preserved.
+Text: type in the chat box — the server spawns `claude -p` with a streaming
+session, forwards text back over the WebSocket. Same session id across turns
+so conversation context is preserved.
+
+Voice: hold the mic button or the Space key (when the text input isn't
+focused). The browser records audio, resamples to 16 kHz mono, wraps it in
+a WAV header, and sends it over WebSocket as base64. The server pipes it
+to `whisper-cli` which prints the transcription, and the transcription
+feeds Claude like any other message.
+
+### Note on Metal / Apple Silicon
+
+`install-whisper.sh` disables the Metal backend (`-DGGML_METAL=OFF`). On this
+Intel iMac 2019 Metal produced garbled output. If you're on Apple Silicon,
+remove that flag from the script to get GPU acceleration — it'll be much
+faster.
 
 ## Layout
 
