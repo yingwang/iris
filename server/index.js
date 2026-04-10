@@ -22,7 +22,7 @@ import fastifyStatic from "@fastify/static";
 import fastifyWebsocket from "@fastify/websocket";
 
 import { ClaudeSession } from "./claude.js";
-import { transcribe, whisperAvailable } from "./whisper.js";
+import { transcribe, whisperAvailable, paraformerAvailable } from "./stt.js";
 import { synthesize, guessLanguage } from "./tts.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -306,13 +306,15 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       try {
         const wav = Buffer.from(msg.data, "base64");
         send({ type: "stt_started" });
-        const text = await transcribe(wav, { language: msg.language ?? "auto" });
+        const { text, engine } = await transcribe(wav, {
+          language: msg.language ?? "auto",
+        });
         if (!text) {
           send({ type: "stt_empty" });
           return;
         }
+        app.log.info({ engine, language: msg.language }, "stt done");
         send({ type: "stt_result", text });
-        app.log.info({ expression: msg.expression }, "received expression");
         const userInput = withExpression(text, msg.expression);
         await streamAssistantTurn(userInput);
       } catch (err) {
@@ -331,11 +333,18 @@ app.get("/ws", { websocket: true }, (socket, req) => {
 });
 
 const hasWhisper = await whisperAvailable();
+const hasParaformer = await paraformerAvailable();
 if (!hasWhisper) {
   app.log.warn("whisper binary or model missing — voice input will fail");
+}
+if (!hasParaformer) {
+  app.log.info(
+    "paraformer model not installed — Chinese turns will use whisper"
+  );
 }
 
 app.listen({ port: PORT, host: "127.0.0.1" }).then(() => {
   console.log(`\n  iris server running at http://localhost:${PORT}`);
-  console.log(`  whisper: ${hasWhisper ? "ready" : "missing"}\n`);
+  console.log(`  whisper:    ${hasWhisper ? "ready" : "missing"}`);
+  console.log(`  paraformer: ${hasParaformer ? "ready (zh)" : "not installed"}\n`);
 });
