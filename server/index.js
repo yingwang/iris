@@ -30,26 +30,26 @@ const PORT = Number(process.env.PORT ?? 3000);
 
 /**
  * Prepend a vision-style note describing the user's current facial
- * expression so Claude can react to it. We always send something when
- * there's a face, even "neutral" — the system prompt tells Claude not
- * to narrate it every turn, but it needs the signal to be consistent
- * so it knows when something *changes*.
- *
- * When the user isn't visible at all, we skip the note entirely.
+ * expression so Claude can react to it. Always emit *something* when we
+ * get any snapshot — even if the tracker says the user is looking away,
+ * that itself is useful information. The only case we drop is when the
+ * client didn't send an expression field at all (face tracker failed
+ * to initialize).
  */
 function withExpression(userText, expression) {
-  if (!expression || !expression.looking) {
-    return userText;
+  if (!expression) return userText;
+  const parts = [];
+  if (expression.looking === false) {
+    parts.push("The user isn't visible on camera right now");
+  } else {
+    parts.push(`The user looks ${expression.label || "neutral"}`);
+    if (expression.smile > 0.6) parts.push("grinning broadly");
+    if (expression.browUp > 0.6) parts.push("eyebrows raised");
+    if (expression.browDown > 0.5) parts.push("brow furrowed");
+    if (expression.eyesClosed > 0.7) parts.push("eyes closed");
+    if (expression.mouthOpen > 0.5 && expression.smile < 0.4) parts.push("mouth open");
   }
-  const parts = [`The user looks ${expression.label}`];
-  // Add finer-grained detail for extremes so Claude can be more specific.
-  if (expression.smile > 0.6) parts.push("grinning broadly");
-  if (expression.browUp > 0.6) parts.push("eyebrows raised");
-  if (expression.browDown > 0.5) parts.push("brow furrowed");
-  if (expression.eyesClosed > 0.7) parts.push("eyes closed");
-  if (expression.mouthOpen > 0.5 && expression.smile < 0.4) parts.push("mouth open");
-  const note = parts.join(", ");
-  return `[${note}.] ${userText}`;
+  return `[${parts.join(", ")}.] ${userText}`;
 }
 
 const app = Fastify({ logger: true });
@@ -143,6 +143,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
           return;
         }
         send({ type: "stt_result", text });
+        app.log.info({ expression: msg.expression }, "received expression");
         const userInput = withExpression(text, msg.expression);
         await streamAssistantTurn(userInput);
       } catch (err) {

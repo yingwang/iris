@@ -20,6 +20,7 @@ const input = document.getElementById("input");
 const micBtn = document.getElementById("mic");
 const selfView = document.getElementById("self-view");
 const avatarCanvas = document.getElementById("avatar");
+const faceDebugEl = document.getElementById("face-debug");
 
 // --- WebSocket ----------------------------------------------------------
 
@@ -303,16 +304,25 @@ async function initFace() {
       else selfView.addEventListener("loadeddata", r, { once: true });
     });
     faceTracker = new FaceTracker(selfView);
+    faceDebugEl.textContent = "face: loading mediapipe…";
     await faceTracker.start();
-    // Mirror user expression onto the avatar: if you smile, iris
-    // smiles back (subtly).
+    faceDebugEl.textContent = "face: running";
+    // Debug readout + mirror user expression onto the avatar: if you
+    // smile, iris smiles back (subtly).
     setInterval(() => {
-      if (!avatarStage || !faceTracker) return;
+      if (!faceTracker) return;
       const snap = faceTracker.snapshot();
-      avatarStage.setSmile(0.5 + snap.smile * 0.5);
+      faceDebugEl.textContent =
+        `face: ${snap.label} · smile ${snap.smile.toFixed(2)}` +
+        ` browUp ${snap.browUp.toFixed(2)} eyes ${snap.eyesClosed.toFixed(2)}` +
+        (snap.looking ? "" : " · NO FACE");
+      if (avatarStage?.ready) {
+        avatarStage.setSmile(0.5 + snap.smile * 0.5);
+      }
     }, 80);
   } catch (err) {
-    console.warn("face tracking unavailable:", err);
+    console.error("face tracking unavailable:", err);
+    faceDebugEl.textContent = `face: FAILED — ${err.message || err.name}`;
   }
 }
 

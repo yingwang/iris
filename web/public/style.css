@@ -44,13 +44,31 @@ main {
   position: absolute;
   bottom: 16px;
   right: 16px;
-  width: 180px;
-  height: 135px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
+  width: 360px;
+  height: 270px;
+  border-radius: 14px;
+  border: 2px solid var(--border);
   object-fit: cover;
   background: #000;
   transform: scaleX(-1); /* mirror */
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+#face-debug {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #9cf;
+  pointer-events: none;
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 #chat {
