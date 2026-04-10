@@ -10,6 +10,7 @@ const statusEl = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
 const form = document.getElementById("compose");
 const input = document.getElementById("input");
+const micBtn = document.getElementById("mic");
 const selfView = document.getElementById("self-view");
 
 // --- WebSocket ----------------------------------------------------------
@@ -89,6 +90,121 @@ form.addEventListener("submit", (ev) => {
   sendText(text);
   input.value = "";
 });
+
+// --- voice input (push-to-talk via Web Speech API) ----------------------
+//
+// Temporary M3: use the browser's built-in SpeechRecognition. It's less
+// accurate than Whisper and needs a network round-trip to Google for
+// Chrome, but it avoids installing whisper.cpp to get something working
+// today. Real Whisper integration lands next.
+
+const SpeechRecognition =
+  window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let recognizing = false;
+let recognitionFinalText = "";
+
+function initRecognition() {
+  if (!SpeechRecognition) {
+    micBtn.disabled = true;
+    micBtn.title = "SpeechRecognition not supported (try Chrome)";
+    return;
+  }
+  recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  // Match the user's browser language by default; fall back to zh-CN.
+  recognition.lang = (navigator.language || "zh-CN").startsWith("zh")
+    ? "zh-CN"
+    : "en-US";
+
+  recognition.onresult = (ev) => {
+    let interim = "";
+    recognitionFinalText = "";
+    for (let i = 0; i < ev.results.length; i++) {
+      const r = ev.results[i];
+      if (r.isFinal) recognitionFinalText += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    input.value = recognitionFinalText + interim;
+  };
+
+  recognition.onerror = (ev) => {
+    statusEl.textContent = `mic error: ${ev.error}`;
+    stopRecognition(false);
+  };
+
+  recognition.onend = () => {
+    if (recognizing) {
+      // unexpected end — stop UI
+      stopRecognition(false);
+    }
+  };
+}
+
+function startRecognition() {
+  if (!recognition || recognizing) return;
+  recognizing = true;
+  recognitionFinalText = "";
+  input.value = "";
+  micBtn.classList.add("recording");
+  statusEl.textContent = "listening…";
+  try {
+    recognition.start();
+  } catch (err) {
+    // Some browsers throw if start() is called too fast after stop()
+    console.warn(err);
+    recognizing = false;
+    micBtn.classList.remove("recording");
+  }
+}
+
+function stopRecognition(shouldSend) {
+  if (!recognition) return;
+  const wasRecognizing = recognizing;
+  recognizing = false;
+  micBtn.classList.remove("recording");
+  try {
+    recognition.stop();
+  } catch {}
+  if (!wasRecognizing) return;
+  const text = input.value.trim();
+  if (shouldSend && text) {
+    sendText(text);
+    input.value = "";
+    recognitionFinalText = "";
+  } else {
+    statusEl.textContent = "ready";
+  }
+}
+
+// Mic button: press-and-hold to record, release to send.
+micBtn.addEventListener("pointerdown", (ev) => {
+  ev.preventDefault();
+  startRecognition();
+});
+micBtn.addEventListener("pointerup", () => stopRecognition(true));
+micBtn.addEventListener("pointercancel", () => stopRecognition(false));
+micBtn.addEventListener("pointerleave", () => {
+  if (recognizing) stopRecognition(true);
+});
+
+// Space bar: hold to record, release to send — but only when focus
+// isn't in the text input (otherwise Space should insert a space).
+window.addEventListener("keydown", (ev) => {
+  if (ev.code !== "Space" || ev.repeat) return;
+  if (document.activeElement === input) return;
+  ev.preventDefault();
+  startRecognition();
+});
+window.addEventListener("keyup", (ev) => {
+  if (ev.code !== "Space") return;
+  if (document.activeElement === input) return;
+  ev.preventDefault();
+  stopRecognition(true);
+});
+
+initRecognition();
 
 // --- webcam (self-view only for now; MediaPipe tracking lands later) ----
 
