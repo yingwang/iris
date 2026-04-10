@@ -5,6 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>iris</title>
     <link rel="stylesheet" href="/style.css" />
+
+    <!--
+      Live2D Cubism Core runtime. Proprietary but free to use via the
+      Live2D SDK terms — cannot be self-hosted, must be loaded from
+      cubism.live2d.com.
+    -->
+    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+
+    <!--
+      PIXI.js + pixi-live2d-display (UMD builds). We keep these as
+      script tags rather than ESM imports because pixi-live2d-display
+      mutates the global PIXI namespace at load time.
+    -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
   </head>
   <body>
     <main>

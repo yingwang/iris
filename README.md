@@ -24,12 +24,12 @@ Status: **early scaffolding** — only text chat streaming works today. Roadmap 
 ## Roadmap
 
 - [x] M1 — text chat: WebSocket → Claude Code CLI → streaming text back to browser
-- [x] M3 — voice in: mic capture → WAV encode → server whisper.cpp → text → Claude
+- [x] M2 — webcam + MediaPipe Face Landmarker: live blendshape snapshot sent as prompt context
+- [x] M3 — voice in: Silero VAD continuous capture → whisper.cpp → text → Claude (no button)
 - [x] M4 — voice out: sentence-by-sentence macOS `say` → WAV → Web Audio playback
-- [ ] M2 — webcam preview + MediaPipe Holistic tracking (user face only)
-- [ ] M5 — Live2D avatar: load a free model, basic idle animation
-- [ ] M6 — lip sync: drive mouth params from TTS audio amplitude / phonemes
-- [ ] M7 — expressions: map MediaPipe face blendshapes onto Live2D parameters
+- [x] M5 — Live2D avatar: Haru sample loads via pixi-live2d-display
+- [x] M6 — lip sync: AnalyserNode RMS on TTS stream → `ParamMouthOpenY`
+- [x] M7 — expression mirror: user's smile → avatar's `ParamMouthForm`
 
 ## Running today (M1 + M3)
 

@@ -11,6 +11,7 @@
 import { blobToBase64 } from "/audio.js";
 import { VADRecorder } from "/vad.js";
 import { FaceTracker } from "/face.js";
+import { AvatarStage } from "/stage.js";
 
 const statusEl = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
@@ -18,6 +19,7 @@ const form = document.getElementById("compose");
 const input = document.getElementById("input");
 const micBtn = document.getElementById("mic");
 const selfView = document.getElementById("self-view");
+const avatarCanvas = document.getElementById("avatar");
 
 // --- WebSocket ----------------------------------------------------------
 
@@ -116,6 +118,35 @@ async function enqueueTtsAudio(base64) {
   if (!playing) pumpPlayQueue();
 }
 
+let lipSyncAnalyser = null;
+let lipSyncRAF = null;
+
+function startLipSyncLoop() {
+  if (lipSyncRAF || !lipSyncAnalyser || !avatarStage) return;
+  const data = new Uint8Array(lipSyncAnalyser.fftSize);
+  const loop = () => {
+    if (!lipSyncAnalyser || !playing) {
+      avatarStage?.setMouthOpen(0);
+      lipSyncRAF = null;
+      return;
+    }
+    lipSyncAnalyser.getByteTimeDomainData(data);
+    // RMS of the 0..255 time-domain samples, centered at 128.
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = (data[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / data.length);
+    // Scale RMS to mouth open range — empirically 0..0.3 is the
+    // interesting part for `say` voices.
+    const mouth = Math.min(1, rms * 3.5);
+    avatarStage.setMouthOpen(mouth);
+    lipSyncRAF = requestAnimationFrame(loop);
+  };
+  lipSyncRAF = requestAnimationFrame(loop);
+}
+
 async function pumpPlayQueue() {
   if (playing) return;
   playing = true;
@@ -126,6 +157,11 @@ async function pumpPlayQueue() {
   if (ctx.state === "suspended") {
     try { await ctx.resume(); } catch {}
   }
+  if (!lipSyncAnalyser) {
+    lipSyncAnalyser = ctx.createAnalyser();
+    lipSyncAnalyser.fftSize = 1024;
+  }
+  startLipSyncLoop();
   while (playQueue.length > 0) {
     const ab = playQueue.shift();
     try {
@@ -133,7 +169,8 @@ async function pumpPlayQueue() {
       await new Promise((resolve) => {
         const src = ctx.createBufferSource();
         src.buffer = buffer;
-        src.connect(ctx.destination);
+        src.connect(lipSyncAnalyser);
+        lipSyncAnalyser.connect(ctx.destination);
         src.onended = resolve;
         src.start();
       });
@@ -143,6 +180,7 @@ async function pumpPlayQueue() {
   }
   playing = false;
   ttsSpeaking = false;
+  avatarStage?.setMouthOpen(0);
   // Give speakers a beat to settle, then unmute.
   setTimeout(() => {
     if (vadRecorder) vadRecorder.resume();
@@ -193,6 +231,7 @@ form.addEventListener("submit", (ev) => {
 
 let vadRecorder = null;
 let faceTracker = null;
+let avatarStage = null;
 let ttsSpeaking = false;
 
 async function initVoice() {
@@ -249,8 +288,26 @@ async function initFace() {
     });
     faceTracker = new FaceTracker(selfView);
     await faceTracker.start();
+    // Mirror user expression onto the avatar: if you smile, iris
+    // smiles back (subtly).
+    setInterval(() => {
+      if (!avatarStage || !faceTracker) return;
+      const snap = faceTracker.snapshot();
+      avatarStage.setSmile(0.5 + snap.smile * 0.5);
+    }, 80);
   } catch (err) {
     console.warn("face tracking unavailable:", err);
+  }
+}
+
+async function initAvatar() {
+  try {
+    avatarStage = new AvatarStage(avatarCanvas);
+    await avatarStage.init();
+    statusEl.textContent = "avatar ready · click anywhere to start";
+  } catch (err) {
+    console.error("avatar init failed:", err);
+    statusEl.textContent = "avatar failed to load — text still works";
   }
 }
 
@@ -258,6 +315,7 @@ async function initFace() {
 
 connect();
 initFace();
+initAvatar();
 // VAD needs a user gesture in most browsers — start it on the first click
 // anywhere, which also unlocks the audio context.
 window.addEventListener(
