@@ -472,6 +472,16 @@ app.get("/ws", { websocket: true }, (socket, req) => {
           language: msg.language ?? "auto",
         });
         if (!text) {
+          // Log enough to diagnose the "iris doesn't hear me" class
+          // of problem — engine, size of the uploaded wav, language
+          // the client asked for. If these empty events come in a
+          // lot the user is probably hitting whisper's short-clip
+          // ceiling and we should bump VAD or retry on a larger
+          // window.
+          app.log.info(
+            { engine, language: msg.language, wavBytes: wav.length },
+            "stt empty"
+          );
           send({ type: "stt_empty" });
           return;
         }

@@ -129,6 +129,15 @@ main {
   color: var(--muted);
   font-style: italic;
 }
+.msg.stt-empty {
+  align-self: flex-end;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+  padding: 4px 10px;
+}
 
 #compose {
   display: flex;

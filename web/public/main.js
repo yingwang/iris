@@ -195,7 +195,12 @@ function handleServerMessage(msg) {
       statusEl.textContent = "iris is thinking…";
       break;
     case "stt_empty":
+      // Leave a faint trace in the transcript so the user knows
+      // their utterance was captured but couldn't be transcribed,
+      // rather than wondering whether the mic is broken. Short
+      // utterances and noisy clips are the usual culprits.
       statusEl.textContent = "couldn't hear you — try again";
+      appendEmptyBubble();
       break;
     case "assistant_chunk":
       if (!currentAssistantBubble) currentAssistantBubble = appendBubble("assistant", "");
@@ -347,6 +352,21 @@ function appendBubble(role, text) {
   const el = document.createElement("div");
   el.className = `msg ${role}`;
   el.textContent = text;
+  transcriptEl.appendChild(el);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  return el;
+}
+
+/**
+ * A lightweight inline marker for user turns that VAD captured but
+ * the STT engine couldn't transcribe. Keeps the user oriented
+ * ("mic is working but that clip was too short") without cluttering
+ * the transcript with full bubbles.
+ */
+function appendEmptyBubble() {
+  const el = document.createElement("div");
+  el.className = "msg stt-empty";
+  el.textContent = "(没听清)";
   transcriptEl.appendChild(el);
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
   return el;

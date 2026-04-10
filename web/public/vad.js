@@ -39,13 +39,17 @@ export class VADRecorder {
       // interruptions much rarer; a small cough or the last syllable
       // of iris's own sentence leaking through echo cancellation no
       // longer counts as "the user just started talking".
-      positiveSpeechThreshold: 0.75,
+      positiveSpeechThreshold: 0.78,
       negativeSpeechThreshold: 0.5,
-      minSpeechFrames: 8, // ~240 ms of sustained speech required
+      // Was 8 frames (~240 ms) — too strict: short words like "嗯"
+      // or "好" didn't survive and VAD reported them as misfires
+      // with no audio making it to the server. 5 frames (~150 ms)
+      // still filters clicks / coughs while catching quick
+      // affirmations. Raised positiveSpeechThreshold slightly from
+      // 0.75 to 0.78 to keep false triggers low.
+      minSpeechFrames: 5,
       preSpeechPadFrames: 8, // ~240 ms of lead-in audio captured
       redemptionFrames: 8, // ~240 ms of silence ends the utterance
-      // (was 12 / 360 ms; 240 ms still feels natural and shaves ~120 ms
-      // off end-of-turn detection, which the user feels as latency)
 
       onSpeechStart: () => {
         if (this.paused) return;
