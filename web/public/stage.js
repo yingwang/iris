@@ -409,14 +409,22 @@ export class AvatarStage {
         serious: "f08",
       },
       natori: {
+        // The named slots — obvious from the filename alone.
         happy: "Smile",
         surprised: "Surprised",
         sad: "Sad",
         curious: "Normal",
-        playful: "Smile",
-        confused: "Sad",
         shy: "Blushing",
         serious: "Angry",
+        // The unlabeled exp_NN slots the user identified visually:
+        //   exp_01 害羞 (shy, variant)
+        //   exp_02 微笑开心 (a different smile — used for playful
+        //          so iris doesn't reuse the main Smile slot)
+        //   exp_03 不满意 (displeased — closest to confused/puzzled)
+        //   exp_04 伤心 (sad, variant)
+        //   exp_05 失望 (disappointed)
+        playful: "exp_02",
+        confused: "exp_03",
       },
     };
 
