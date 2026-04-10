@@ -149,6 +149,43 @@ export class AvatarStage {
       this.expressionNames = [];
     }
 
+    // Expose a tiny devtools helper so the user can cycle through
+    // expressions and figure out which one means what. Call from
+    // the browser console:
+    //
+    //   iris.setExp(0)     // load expression index 0
+    //   iris.setExp(3)     // load index 3
+    //   iris.listExp()     // print all names with indices
+    //   iris.nextExp()     // advance one index
+    //
+    // Once you know which index looks like which mood, tell the
+    // author and we hardcode the mapping into setMood().
+    const self = this;
+    let cursor = 0;
+    window.iris = {
+      listExp() {
+        self.expressionNames.forEach((n, i) => console.log(`  ${i}: ${n}`));
+      },
+      setExp(i) {
+        const idx = ((i % self.expressionNames.length) + self.expressionNames.length) %
+          self.expressionNames.length;
+        const name = self.expressionNames[idx];
+        console.log(`[iris.setExp] ${idx} → ${name}`);
+        try {
+          self.model.expression(name);
+        } catch (err) {
+          console.warn("failed:", err);
+        }
+        cursor = idx;
+      },
+      nextExp() {
+        this.setExp(cursor + 1);
+      },
+      model() {
+        return self.model;
+      },
+    };
+
     // Cache the model's intrinsic size before we touch its scale.
     // pixi-live2d-display's .width / .height return the current
     // rendered size (post-scale); we snapshot the unscaled footprint
