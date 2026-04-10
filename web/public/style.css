@@ -12,8 +12,13 @@
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
+  height: 100%;
+  /* Pin the document to the viewport so it never scrolls — any growth
+     has to come from inside a child that owns its own overflow. */
+  overflow: hidden;
   font-family: -apple-system, system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
@@ -23,6 +28,7 @@ main {
   display: grid;
   grid-template-columns: 1fr 380px;
   height: 100vh;
+  min-height: 0;
 }
 
 #stage {
@@ -32,6 +38,8 @@ main {
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  min-height: 0;
+  min-width: 0;
 }
 
 #avatar {
@@ -78,10 +86,14 @@ main {
   flex-direction: column;
   background: var(--panel);
   border-left: 1px solid var(--border);
+  min-height: 0; /* allow grid cell to contain it */
+  overflow: hidden;
 }
 
 #transcript {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0; /* let the flex child actually shrink instead of
+                    forcing its parent to grow with its content */
   padding: 20px;
   overflow-y: auto;
   display: flex;

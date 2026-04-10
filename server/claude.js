@@ -78,9 +78,9 @@ export class ClaudeSession {
    *   for await (const chunk of session.send("hello")) { ... }
    */
   async *send(userText) {
-    // On turn 1 we create the session with --session-id. On turns 2+ we
-    // --resume it. Passing both flags together errors with "session id
-    // already in use", so we pick exactly one depending on firstTurn.
+    // Turn 1 creates the session with --session-id; turns 2+ use
+    // --resume. Passing both flags errors with "session id already
+    // in use".
     const args = [
       "-p",
       userText,
