@@ -29,16 +29,27 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3000);
 
 /**
- * Turn a client expression snapshot into a prompt prefix the assistant
- * can react to naturally. Skipped if there's no face or the label is
- * neutral — otherwise Claude starts wedging "I can see you're neutral"
- * into every reply.
+ * Prepend a vision-style note describing the user's current facial
+ * expression so Claude can react to it. We always send something when
+ * there's a face, even "neutral" — the system prompt tells Claude not
+ * to narrate it every turn, but it needs the signal to be consistent
+ * so it knows when something *changes*.
+ *
+ * When the user isn't visible at all, we skip the note entirely.
  */
 function withExpression(userText, expression) {
-  if (!expression || !expression.looking || expression.label === "neutral") {
+  if (!expression || !expression.looking) {
     return userText;
   }
-  return `[I can see on camera that you look ${expression.label}.] ${userText}`;
+  const parts = [`The user looks ${expression.label}`];
+  // Add finer-grained detail for extremes so Claude can be more specific.
+  if (expression.smile > 0.6) parts.push("grinning broadly");
+  if (expression.browUp > 0.6) parts.push("eyebrows raised");
+  if (expression.browDown > 0.5) parts.push("brow furrowed");
+  if (expression.eyesClosed > 0.7) parts.push("eyes closed");
+  if (expression.mouthOpen > 0.5 && expression.smile < 0.4) parts.push("mouth open");
+  const note = parts.join(", ");
+  return `[${note}.] ${userText}`;
 }
 
 const app = Fastify({ logger: true });

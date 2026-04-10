@@ -55,13 +55,34 @@ export class AvatarStage {
     this.fitModel();
     window.addEventListener("resize", () => this.fitModel());
 
-    // Disable built-in mouth lip sync so ours wins.
-    this.model.internalModel.breath?.setParameters?.([]);
+    // Let the avatar track the mouse/center so there's subtle head and
+    // eye movement even when idle.
+    this.model.focus(this.app.renderer.screen.width / 2, this.app.renderer.screen.height / 2);
+
+    // Kick off an idle motion. Cubism 4 models organise motions by
+    // group — Haru uses "Idle" as the default idle group. We loop
+    // through random Idle motions; pixi-live2d-display will auto-play
+    // breath and blink on top.
+    this.startIdleLoop();
 
     // Per-tick updates for expression + mouth drives.
     this.app.ticker.add(() => this.tick());
 
     this.ready = true;
+  }
+
+  startIdleLoop() {
+    if (!this.model) return;
+    const playRandomIdle = () => {
+      try {
+        // Priority 1 = idle; 2 = normal; 3 = force. Idle so Haru will
+        // happily interrupt with a lip-sync when TTS plays.
+        this.model.motion("Idle", undefined, 1);
+      } catch (_) {}
+    };
+    playRandomIdle();
+    // Retrigger every ~10 s so she doesn't freeze between idle cycles.
+    setInterval(playRandomIdle, 10000);
   }
 
   fitModel() {
