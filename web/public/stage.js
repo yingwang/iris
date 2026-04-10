@@ -122,6 +122,33 @@ export class AvatarStage {
 
     this.app.stage.addChild(this.model);
 
+    // Force our lip-sync parameter write to run AFTER the motion
+    // manager's own per-frame update. Without this, motion files
+    // write ParamMouthOpenY on their own (idle motions often do),
+    // and because pixi's ticker runs our tick() BEFORE the model's
+    // internal update, motion stomps on our RMS value every frame
+    // and the mouth barely moves with the audio. Monkey-patching
+    // internalModel.update means our write is the last thing to
+    // touch the parameter before rendering.
+    try {
+      const im = this.model.internalModel;
+      if (im && typeof im.update === "function") {
+        const origUpdate = im.update.bind(im);
+        im.update = (...args) => {
+          const ret = origUpdate(...args);
+          try {
+            im.coreModel?.setParameterValueById?.(
+              "ParamMouthOpenY",
+              this.externalMouth
+            );
+          } catch {}
+          return ret;
+        };
+      }
+    } catch (err) {
+      console.warn("[stage] couldn't patch update for lip sync:", err);
+    }
+
     // Discover the model's expression catalogue so setMood can map
     // Claude's logical mood cues to real file names. pixi-live2d-
     // display exposes the manager on internalModel.motionManager,

@@ -208,19 +208,33 @@ function createExpressionStream() {
 
 /**
  * Prepend a vision-style note describing the user's current facial
- * expression so Claude can react to it. Always emit *something* when we
- * get any snapshot — even if the tracker says the user is looking away,
- * that itself is useful information. The only case we drop is when the
- * client didn't send an expression field at all (face tracker failed
- * to initialize).
+ * expression so Claude can react to it. Always emit *something* when
+ * we get any snapshot. The third argument is the previously-seen
+ * label for this connection — when it differs from the current one
+ * we phrase the hint as a transition ("just shifted from X to Y")
+ * so Claude notices the change and reacts in words + expressions.
  */
-function withExpression(userText, expression) {
+function withExpression(userText, expression, prevLabel) {
   if (!expression) return userText;
   const parts = [];
   if (expression.looking === false) {
-    parts.push("The user isn't visible on camera right now");
+    if (prevLabel && prevLabel !== "looking away") {
+      parts.push("The user just looked away from the camera");
+    } else {
+      parts.push("The user isn't visible on camera right now");
+    }
   } else {
-    parts.push(`The user looks ${expression.label || "neutral"}`);
+    const label = expression.label || "neutral";
+    if (prevLabel && prevLabel !== label && prevLabel !== "looking away") {
+      // Phrase it as an observed transition — the stronger cue
+      // should push Claude to react in her reply rather than
+      // glossing over the change as background.
+      parts.push(`The user just shifted from ${prevLabel} to ${label}`);
+    } else if (prevLabel === "looking away") {
+      parts.push(`The user came back to the camera and looks ${label}`);
+    } else {
+      parts.push(`The user looks ${label}`);
+    }
     if (expression.smile > 0.6) parts.push("grinning broadly");
     if (expression.browUp > 0.6) parts.push("eyebrows raised");
     if (expression.browDown > 0.5) parts.push("brow furrowed");
@@ -325,6 +339,13 @@ app.get("/ws", { websocket: true }, (socket, req) => {
   // VOICE_PRESETS (e.g. "female-xiaoxiao", "male-yunze"), `rate` is
   // the edge-tts speed offset in percent (-50..+50).
   const voicePrefs = { preset: DEFAULT_PRESET, rate: null };
+
+  // Last face label we saw for this connection. Used by
+  // withExpression to describe face changes as transitions
+  // ("just shifted from neutral to smiling") so Claude reacts to
+  // them instead of treating each turn's label as an independent
+  // static state.
+  let lastFaceLabel = null;
 
   const send = (obj) => socket.send(JSON.stringify(obj));
 
@@ -501,7 +522,14 @@ app.get("/ws", { websocket: true }, (socket, req) => {
 
     if (msg.type === "user_text" && typeof msg.text === "string") {
       try {
-        const userInput = withExpression(msg.text, msg.expression);
+        const userInput = withExpression(
+          msg.text,
+          msg.expression,
+          lastFaceLabel
+        );
+        if (msg.expression?.label) lastFaceLabel = msg.expression.label;
+        else if (msg.expression?.looking === false)
+          lastFaceLabel = "looking away";
         await streamAssistantTurn(userInput);
       } catch (err) {
         app.log.error(err);
@@ -541,7 +569,10 @@ app.get("/ws", { websocket: true }, (socket, req) => {
           "stt done"
         );
         send({ type: "stt_result", text });
-        const userInput = withExpression(text, msg.expression);
+        const userInput = withExpression(text, msg.expression, lastFaceLabel);
+        if (msg.expression?.label) lastFaceLabel = msg.expression.label;
+        else if (msg.expression?.looking === false)
+          lastFaceLabel = "looking away";
         await streamAssistantTurn(userInput);
       } catch (err) {
         app.log.error(err);
