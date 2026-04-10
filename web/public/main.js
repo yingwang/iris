@@ -82,6 +82,11 @@ function handleServerMessage(msg) {
     case "avatar_expression":
       avatarStage?.setMood(msg.name);
       break;
+    case "interrupted":
+      // Server confirmed it aborted the turn. Nothing else to do —
+      // our local interrupt handler already cleared the queue.
+      statusEl.textContent = "interrupted";
+      break;
     case "error":
       appendBubble("assistant", `⚠️ ${msg.message}`);
       currentAssistantBubble = null;
@@ -157,8 +162,12 @@ async function pumpPlayQueue() {
   if (playing) return;
   playing = true;
   ttsSpeaking = true;
-  // Mute mic while iris is talking so she doesn't hear herself.
-  if (vadRecorder) vadRecorder.pause();
+  // We used to mute the mic here, but the user asked for voice
+  // interrupt, so we now leave the VAD running. getUserMedia's
+  // built-in echoCancellation handles most of the feedback; the
+  // VAD's onSpeechStart handler calls interruptIris() if it fires
+  // while playing is true, which stops playback and kicks off a new
+  // user turn.
 
   const ctx = ensureAudioCtx();
   if (ctx.state === "suspended") {
@@ -171,15 +180,20 @@ async function pumpPlayQueue() {
   }
   startLipSyncLoop();
 
-  while (playQueue.length > 0) {
+  while (playQueue.length > 0 && playing) {
     const ab = playQueue.shift();
     try {
       const buffer = await ctx.decodeAudioData(ab.slice(0));
+      if (!playing) break; // interrupted while decoding
       await new Promise((resolve) => {
         const src = ctx.createBufferSource();
         src.buffer = buffer;
         src.connect(ttsAnalyser);
-        src.onended = resolve;
+        src.onended = () => {
+          currentAudioSource = null;
+          resolve();
+        };
+        currentAudioSource = src;
         src.start();
       });
     } catch (err) {
@@ -190,9 +204,6 @@ async function pumpPlayQueue() {
   playing = false;
   ttsSpeaking = false;
   avatarStage?.setMouthOpen(0);
-  setTimeout(() => {
-    if (vadRecorder) vadRecorder.resume();
-  }, 300);
 }
 
 function appendBubble(role, text) {
@@ -249,6 +260,10 @@ async function initVoice() {
   try {
     vadRecorder = new VADRecorder({
       onSpeechStart: () => {
+        // If iris is in the middle of speaking, treat this as an
+        // interrupt: stop her audio, clear the queue, and tell the
+        // server to kill the in-flight Claude stream.
+        if (playing) interruptIris();
         statusEl.textContent = "listening…";
         micBtn.classList.add("recording");
       },
@@ -267,6 +282,31 @@ async function initVoice() {
   } catch (err) {
     console.error(err);
     statusEl.textContent = `mic error: ${err.message || err.name}`;
+  }
+}
+
+/**
+ * Hard-stop iris mid-sentence. Called when the user starts talking over
+ * her. Kills the live audio source, clears any queued chunks, tells the
+ * server to abort the Claude subprocess and skip further TTS, and fires
+ * the mouth back to resting.
+ */
+let currentAudioSource = null;
+function interruptIris() {
+  try {
+    if (currentAudioSource) {
+      currentAudioSource.onended = null;
+      currentAudioSource.stop();
+      currentAudioSource.disconnect();
+    }
+  } catch {}
+  currentAudioSource = null;
+  playQueue.length = 0;
+  playing = false;
+  ttsSpeaking = false;
+  avatarStage?.setMouthOpen(0);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "interrupt" }));
   }
 }
 

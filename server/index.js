@@ -106,6 +106,19 @@ app.get("/ws", { websocket: true }, (socket, req) => {
   const send = (obj) => socket.send(JSON.stringify(obj));
 
   /**
+   * When the client tells us the user has started talking over iris, we
+   * need to stop emitting. Set a flag the streaming loop checks, kill the
+   * live Claude subprocess, and notify the browser so it can flush its
+   * audio queue.
+   */
+  let interruptedAt = 0;
+  const interruptCurrent = () => {
+    interruptedAt = Date.now();
+    session.cancel();
+    send({ type: "interrupted" });
+  };
+
+  /**
    * Stream an assistant turn: forward text chunks as they arrive, and when
    * a sentence-ending punctuation appears, flush the buffered text through
    * `say` and ship the resulting WAV to the browser. The client plays WAV
@@ -113,6 +126,8 @@ app.get("/ws", { websocket: true }, (socket, req) => {
    */
   const streamAssistantTurn = async (userText) => {
     app.log.info({ prompt: userText.slice(0, 200) }, "→ claude");
+    const turnStartedAt = Date.now();
+    const isInterrupted = () => interruptedAt > turnStartedAt;
     let buffer = "";
     let full = "";
 
@@ -142,10 +157,12 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       }
       const piece = buffer.slice(0, cut).trim();
       buffer = buffer.slice(cut);
+      if (isInterrupted()) return;
       const speakable = stripForSpeech(piece);
       if (!speakable) return;
       try {
         const wav = await synthesize(speakable, { language: guessLanguage(speakable) });
+        if (isInterrupted()) return; // user started talking while TTS was synthesizing
         if (wav.length > 0) {
           send({ type: "tts_audio", data: wav.toString("base64") });
         }
@@ -156,6 +173,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
 
     let expressionScanFrom = 0;
     for await (const chunk of session.send(userText)) {
+      if (isInterrupted()) break;
       send({ type: "assistant_chunk", text: chunk });
       full += chunk;
       buffer += chunk;
@@ -171,7 +189,9 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       // semantics: we await but it's usually sub-second per sentence).
       await flush(false);
     }
-    await flush(true);
+    if (!isInterrupted()) {
+      await flush(true);
+    }
     send({ type: "assistant_end" });
     return full;
   };
@@ -182,6 +202,11 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       msg = JSON.parse(raw.toString());
     } catch {
       return send({ type: "error", message: "invalid json" });
+    }
+
+    if (msg.type === "interrupt") {
+      interruptCurrent();
+      return;
     }
 
     if (msg.type === "user_text" && typeof msg.text === "string") {

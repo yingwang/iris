@@ -69,6 +69,20 @@ export class ClaudeSession {
     this.sessionId = sessionId ?? randomUUID();
     this.systemPrompt = systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     this.firstTurn = true;
+    // Active child process for the current turn, so we can kill it
+    // from the outside on user interrupt.
+    this.activeChild = null;
+    this.cancelled = false;
+  }
+
+  /** Abort the in-flight turn, if any. Safe to call concurrently. */
+  cancel() {
+    this.cancelled = true;
+    if (this.activeChild && !this.activeChild.killed) {
+      try {
+        this.activeChild.kill("SIGTERM");
+      } catch {}
+    }
   }
 
   /**
@@ -99,6 +113,8 @@ export class ClaudeSession {
     }
 
     const child = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"] });
+    this.activeChild = child;
+    this.cancelled = false;
 
     let buffer = "";
     const lines = [];
@@ -135,23 +151,28 @@ export class ClaudeSession {
       }
     });
 
-    while (true) {
-      if (lines.length === 0) {
-        if (ended) break;
-        await new Promise((resolve) => {
-          resolver = resolve;
-        });
-        continue;
+    try {
+      while (true) {
+        if (this.cancelled) break;
+        if (lines.length === 0) {
+          if (ended) break;
+          await new Promise((resolve) => {
+            resolver = resolve;
+          });
+          continue;
+        }
+        const line = lines.shift();
+        let obj;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const chunk = extractTextChunk(obj);
+        if (chunk) yield chunk;
       }
-      const line = lines.shift();
-      let obj;
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const chunk = extractTextChunk(obj);
-      if (chunk) yield chunk;
+    } finally {
+      if (this.activeChild === child) this.activeChild = null;
     }
   }
 }
