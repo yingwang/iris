@@ -29,6 +29,29 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3000);
 
 /**
+ * Strip characters that sound broken when piped through TTS. Even
+ * though the system prompt forbids emoji / markdown / code, Claude
+ * sometimes drops them in anyway — especially emoji after lists. We
+ * scrub them server-side so the TTS voice never reads "dog face emoji"
+ * out loud. The original text still goes into the transcript bubble,
+ * so the user sees exactly what Claude wrote.
+ */
+function stripForSpeech(text) {
+  return text
+    // Extended_Pictographic covers emoji, dingbats, pictographs.
+    .replace(/\p{Extended_Pictographic}/gu, "")
+    // Variation selectors and zero-width joiners that follow emoji.
+    .replace(/[\u200d\ufe0f]/g, "")
+    // Inline code and bold/italic markdown markers.
+    .replace(/[`*_~]/g, "")
+    // Headers and bullet prefixes at line starts.
+    .replace(/^\s*[#>\-*+]+\s*/gm, "")
+    // Collapse whitespace runs introduced by stripping.
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/**
  * Prepend a vision-style note describing the user's current facial
  * expression so Claude can react to it. Always emit *something* when we
  * get any snapshot — even if the tracker says the user is looking away,
@@ -90,9 +113,10 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       }
       const piece = buffer.slice(0, cut).trim();
       buffer = buffer.slice(cut);
-      if (!piece) return;
+      const speakable = stripForSpeech(piece);
+      if (!speakable) return;
       try {
-        const wav = await synthesize(piece, { language: guessLanguage(piece) });
+        const wav = await synthesize(speakable, { language: guessLanguage(speakable) });
         if (wav.length > 0) {
           send({ type: "tts_audio", data: wav.toString("base64") });
         }
