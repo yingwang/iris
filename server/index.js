@@ -201,8 +201,10 @@ app.get("/ws", { websocket: true }, (socket, req) => {
 
     // Minimum chars before we'll flush on a weak boundary (comma).
     // Keeps us from shipping 2-character TTS chunks while Claude is
-    // still writing.
-    const MIN_COMMA_FLUSH = 12;
+    // still writing. Tuned down from 12 → 6: iris's first audible
+    // chunk lands several hundred ms sooner, which the user feels as
+    // reply latency. Short clauses synthesize fine in edge-tts.
+    const MIN_COMMA_FLUSH = 6;
     const flush = async (force = false) => {
       if (!buffer.trim()) return;
       let cut = buffer.length;

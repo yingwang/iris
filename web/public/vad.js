@@ -43,7 +43,9 @@ export class VADRecorder {
       negativeSpeechThreshold: 0.5,
       minSpeechFrames: 8, // ~240 ms of sustained speech required
       preSpeechPadFrames: 8, // ~240 ms of lead-in audio captured
-      redemptionFrames: 12, // ~360 ms of silence ends the utterance
+      redemptionFrames: 8, // ~240 ms of silence ends the utterance
+      // (was 12 / 360 ms; 240 ms still feels natural and shaves ~120 ms
+      // off end-of-turn detection, which the user feels as latency)
 
       onSpeechStart: () => {
         if (this.paused) return;

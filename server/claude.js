@@ -1,11 +1,26 @@
 /**
- * Claude Code CLI wrapper.
+ * Claude Code CLI wrapper — persistent stream-json mode.
  *
- * Spawns `claude -p ... --output-format stream-json` as a subprocess and
- * streams assistant text back to the caller as it arrives. Uses the user's
- * Claude Code subscription — no API key needed.
+ * Earlier versions spawned `claude -p <prompt>` once per user turn, which
+ * cost 500–1500 ms of process-startup, hooks, plugin sync, CLAUDE.md
+ * auto-discovery etc. on every single reply. That startup tax was the
+ * single biggest latency contributor for short turns.
  *
- * Each ClaudeSession maintains conversation continuity via --session-id.
+ * This version keeps one long-running subprocess alive per session using
+ * `claude -p --input-format stream-json --output-format stream-json`.
+ * User messages are written to stdin as newline-delimited JSON events
+ * and assistant text is streamed back on stdout. The subprocess survives
+ * across turns, so only the first turn pays the cold-spawn tax — every
+ * subsequent turn is near-zero framework overhead.
+ *
+ * Concurrency model:
+ *   - At most one turn is in flight at a time per session. Back-to-back
+ *     send() calls are serialized by the caller (iris's server only
+ *     kicks off a new turn after cancel/assistant_end, so this is already
+ *     the case in practice).
+ *   - cancel() kills the subprocess. The next send() respawns via
+ *     --resume <session-id> so conversation history is preserved. The
+ *     respawn cost is only paid on actual interrupts, not normal turns.
  */
 
 import { spawn } from "node:child_process";
@@ -73,115 +88,190 @@ STRICT TAG RULES:
   bracketed internal monologue, no "[thinking: ...]". Just answer directly as if speaking
   to the user. Your output is going straight to a TTS voice on a live call.`;
 
+// Default to Sonnet — noticeably faster than Opus for the same chat
+// workload, still plenty smart for short conversational turns. Override
+// via IRIS_CLAUDE_MODEL if you want Opus quality or Haiku speed.
+const DEFAULT_MODEL = process.env.IRIS_CLAUDE_MODEL || "sonnet";
+
 export class ClaudeSession {
-  constructor({ sessionId, systemPrompt } = {}) {
+  constructor({ sessionId, systemPrompt, model } = {}) {
     this.sessionId = sessionId ?? randomUUID();
     this.systemPrompt = systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
-    this.firstTurn = true;
-    // Active child process for the current turn, so we can kill it
-    // from the outside on user interrupt.
-    this.activeChild = null;
+    this.model = model ?? DEFAULT_MODEL;
+    this.child = null;
+    // Incremented every time we spawn a fresh subprocess. Used to
+    // track whether --session-id (first spawn, creates the session)
+    // or --resume (subsequent spawns after a kill) is appropriate.
+    this.spawnCount = 0;
+    // Set when the caller wants the in-flight turn aborted. Cleared
+    // at the start of each new send().
     this.cancelled = false;
-  }
-
-  /** Abort the in-flight turn, if any. Safe to call concurrently. */
-  cancel() {
-    this.cancelled = true;
-    if (this.activeChild && !this.activeChild.killed) {
-      try {
-        this.activeChild.kill("SIGTERM");
-      } catch {}
-    }
+    // The current turn's sink — push() appends parsed JSON events
+    // and notifies any waiting consumer.
+    this.turnSink = null;
   }
 
   /**
-   * Send one user message and yield assistant text chunks as they stream in.
-   *
-   * Uses --output-format stream-json, which emits one JSON object per line.
-   * We only forward message_delta / content_block_delta text chunks.
-   *
-   *   for await (const chunk of session.send("hello")) { ... }
+   * Lazily spawn the persistent subprocess. Safe to call many times —
+   * only the first one does work, the rest return immediately. Spawns
+   * with --session-id on the cold start and --resume on any respawn
+   * so conversation history survives interrupts.
    */
-  async *send(userText) {
-    // Turn 1 creates the session with --session-id; turns 2+ use
-    // --resume. Passing both flags errors with "session id already
-    // in use".
+  #ensureChild() {
+    if (this.child && !this.child.killed) return;
+
     const args = [
       "-p",
-      userText,
-      "--output-format",
-      "stream-json",
+      "--input-format", "stream-json",
+      "--output-format", "stream-json",
       "--verbose",
+      "--model", this.model,
     ];
-    if (this.firstTurn) {
+    if (this.spawnCount === 0) {
       args.push("--session-id", this.sessionId);
       args.push("--append-system-prompt", this.systemPrompt);
-      this.firstTurn = false;
     } else {
+      // Respawn after an interrupt. --resume re-attaches to the
+      // session we created on turn 1; the system prompt was baked
+      // in then and is replayed automatically on resume.
       args.push("--resume", this.sessionId);
     }
+    this.spawnCount += 1;
 
-    const child = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"] });
-    this.activeChild = child;
-    this.cancelled = false;
+    const child = spawn("claude", args, {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    this.child = child;
 
+    // Line-buffered stdout parser. stream-json emits one JSON object
+    // per newline — we dispatch each parsed object to the active
+    // turn's sink (or drop it on the floor if no turn is active,
+    // which happens for the tail of a cancelled turn).
     let buffer = "";
-    const lines = [];
-    let resolver = null;
-    let ended = false;
-    let errorText = "";
-
     child.stdout.on("data", (data) => {
       buffer += data.toString();
       let nl;
       while ((nl = buffer.indexOf("\n")) !== -1) {
         const line = buffer.slice(0, nl).trim();
         buffer = buffer.slice(nl + 1);
-        if (line) lines.push(line);
-      }
-      if (resolver) {
-        const r = resolver;
-        resolver = null;
-        r();
-      }
-    });
-    child.stderr.on("data", (data) => {
-      errorText += data.toString();
-    });
-    child.on("close", (code) => {
-      ended = true;
-      if (code !== 0 && errorText) {
-        lines.push(JSON.stringify({ type: "error", text: errorText }));
-      }
-      if (resolver) {
-        const r = resolver;
-        resolver = null;
-        r();
-      }
-    });
-
-    try {
-      while (true) {
-        if (this.cancelled) break;
-        if (lines.length === 0) {
-          if (ended) break;
-          await new Promise((resolve) => {
-            resolver = resolve;
-          });
-          continue;
-        }
-        const line = lines.shift();
+        if (!line) continue;
         let obj;
         try {
           obj = JSON.parse(line);
         } catch {
           continue;
         }
+        if (this.turnSink) this.turnSink.push(obj);
+      }
+    });
+
+    let stderrBuf = "";
+    child.stderr.on("data", (d) => {
+      stderrBuf += d.toString();
+    });
+
+    child.on("exit", (code) => {
+      if (this.turnSink) {
+        this.turnSink.end(
+          code !== 0 && stderrBuf
+            ? new Error(`claude exited ${code}: ${stderrBuf.slice(-500)}`)
+            : null
+        );
+      }
+      if (this.child === child) this.child = null;
+    });
+  }
+
+  /** Abort the in-flight turn, if any. Safe to call concurrently. */
+  cancel() {
+    this.cancelled = true;
+    if (this.turnSink) this.turnSink.end(null);
+    if (this.child && !this.child.killed) {
+      try {
+        this.child.kill("SIGTERM");
+      } catch {}
+    }
+  }
+
+  /**
+   * Send one user message and yield assistant text chunks as they
+   * arrive. Usage:
+   *
+   *   for await (const chunk of session.send("hello")) { ... }
+   *
+   * The generator ends when Claude emits a `result` event (normal
+   * turn completion) or when cancel() is called.
+   */
+  async *send(userText) {
+    this.cancelled = false;
+    this.#ensureChild();
+
+    // Sink: a bounded queue of parsed JSON events from stdout. The
+    // read loop below awaits sink.next() which resolves either with
+    // an event or with an end signal.
+    const queue = [];
+    let resolver = null;
+    let ended = false;
+    let endError = null;
+
+    const sink = {
+      push(obj) {
+        queue.push(obj);
+        if (resolver) {
+          const r = resolver;
+          resolver = null;
+          r();
+        }
+      },
+      end(err) {
+        ended = true;
+        endError = err;
+        if (resolver) {
+          const r = resolver;
+          resolver = null;
+          r();
+        }
+      },
+    };
+    this.turnSink = sink;
+
+    // Write the user message as a single JSON line on stdin. The
+    // stream-json input format wraps the raw Anthropic message shape
+    // in a {type: "user", message: {...}} envelope.
+    const event = {
+      type: "user",
+      message: { role: "user", content: userText },
+    };
+    try {
+      this.child.stdin.write(JSON.stringify(event) + "\n");
+    } catch (err) {
+      this.turnSink = null;
+      throw err;
+    }
+
+    try {
+      while (true) {
+        if (this.cancelled) break;
+        if (queue.length === 0) {
+          if (ended) {
+            if (endError) throw endError;
+            break;
+          }
+          await new Promise((resolve) => {
+            resolver = resolve;
+          });
+          continue;
+        }
+        const obj = queue.shift();
+        // A result event marks the end of this turn — the subprocess
+        // stays alive waiting for the next user message, so we just
+        // stop yielding and return.
+        if (obj.type === "result") break;
         const chunk = extractTextChunk(obj);
         if (chunk) yield chunk;
       }
     } finally {
-      if (this.activeChild === child) this.activeChild = null;
+      if (this.turnSink === sink) this.turnSink = null;
     }
   }
 }
@@ -201,11 +291,11 @@ const SYSTEM_NOISE = new Set([
 function extractTextChunk(obj) {
   if (!obj || typeof obj !== "object") return null;
 
-  // Ignore system / result envelopes entirely. Claude Code emits its
-  // own "No response requested." result line for some stream-json
-  // events — forwarding that to the client as assistant text reads
-  // to the user as if iris is saying "no response requested".
+  // Ignore system / result / rate-limit envelopes entirely. Each turn
+  // in persistent mode re-emits a system/init block with the full
+  // tool list, which we don't want to confuse for assistant text.
   if (obj.type === "system" || obj.type === "result") return null;
+  if (obj.type === "rate_limit_event") return null;
   if (obj.subtype === "init" || obj.subtype === "result") return null;
 
   // Top-level {type: "assistant", message: {content: [{type: "text", text: "..."}]}}
