@@ -408,7 +408,10 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       // blocks, and tells us which mood cues to forward. Only the
       // returned `text` ever reaches the chat bubble or TTS.
       const { text: exprCleaned, cues } = exprStream.push(chunk);
-      for (const name of cues) send({ type: "avatar_expression", name });
+      for (const name of cues) {
+        app.log.info({ mood: name }, "avatar expression");
+        send({ type: "avatar_expression", name });
+      }
       // Then peel off any <remember>…</remember> facts before
       // anything reaches the bubble or the TTS. Each fact is
       // appended to memory.md and forwarded to the client as a
@@ -528,7 +531,15 @@ app.get("/ws", { websocket: true }, (socket, req) => {
           send({ type: "stt_empty" });
           return;
         }
-        app.log.info({ engine, language: msg.language }, "stt done");
+        app.log.info(
+          {
+            engine,
+            language: msg.language,
+            wavBytes: wav.length,
+            text: text.slice(0, 80),
+          },
+          "stt done"
+        );
         send({ type: "stt_result", text });
         const userInput = withExpression(text, msg.expression);
         await streamAssistantTurn(userInput);

@@ -41,14 +41,16 @@ export class VADRecorder {
       // longer counts as "the user just started talking".
       positiveSpeechThreshold: 0.78,
       negativeSpeechThreshold: 0.5,
-      // Was 8 frames (~240 ms) — too strict: short words like "嗯"
-      // or "好" didn't survive and VAD reported them as misfires
-      // with no audio making it to the server. 5 frames (~150 ms)
-      // still filters clicks / coughs while catching quick
-      // affirmations. Raised positiveSpeechThreshold slightly from
-      // 0.75 to 0.78 to keep false triggers low.
-      minSpeechFrames: 5,
-      preSpeechPadFrames: 8, // ~240 ms of lead-in audio captured
+      // Was 8 frames (~240 ms) — too strict. 3 frames (~90 ms) is
+      // low enough to catch 2-character Chinese affirmations like
+      // "你好" / "谢谢" spoken quickly, while positiveSpeechThreshold
+      // 0.78 keeps false triggers down.
+      minSpeechFrames: 3,
+      // Bumped from 8 → 16 frames (~480 ms of lead-in). Short clips
+      // benefit most from extra pre-roll because whisper / paraformer
+      // need context to lock on; without enough lead-in a 2-character
+      // utterance transcribes as empty.
+      preSpeechPadFrames: 16,
       redemptionFrames: 8, // ~240 ms of silence ends the utterance
 
       onSpeechStart: () => {

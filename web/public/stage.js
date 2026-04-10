@@ -48,6 +48,14 @@ export class AvatarStage {
     this.ready = false;
     this.externalMouth = 0;
     this.externalSmile = 0;
+    // List of expression NAMES the currently loaded model exposes,
+    // discovered from the model's expression manager on load. Used
+    // by setMood to map Claude's logical mood cues (happy, surprised,
+    // ...) to whatever the model actually ships with. Different
+    // models have different expression sets (Haru uses f01..f08,
+    // Natori has its own naming scheme), so hardcoding file names
+    // breaks when you swap personas.
+    this.expressionNames = [];
   }
 
   async init() {
@@ -113,6 +121,24 @@ export class AvatarStage {
     }
 
     this.app.stage.addChild(this.model);
+
+    // Discover the model's expression catalogue so setMood can map
+    // Claude's logical mood cues to real file names. pixi-live2d-
+    // display exposes the manager on internalModel.motionManager.
+    try {
+      const mgr = this.model.internalModel?.motionManager?.expressionManager;
+      const defs = mgr?.definitions || mgr?._definitions || [];
+      this.expressionNames = defs
+        .map((d) => d?.Name || d?.name || d?.File || d?.file || "")
+        .filter(Boolean);
+      console.log(
+        `[stage] ${personaKey} expressions:`,
+        this.expressionNames
+      );
+    } catch (err) {
+      console.warn("[stage] could not read expression list:", err);
+      this.expressionNames = [];
+    }
 
     // Cache the model's intrinsic size before we touch its scale.
     // pixi-live2d-display's .width / .height return the current
@@ -280,30 +306,62 @@ export class AvatarStage {
 
   /**
    * Apply a Claude-emitted mood cue (happy, surprised, sad, curious,
-   * playful, confused, shy, serious) to one of Haru's expression
-   * files. Haru ships with f01..f08 and the label-to-file mapping is
-   * somewhat arbitrary — what matters is that a change actually
-   * shifts the face.
+   * playful, confused, shy, serious) to one of the loaded model's
+   * expression slots. Since different models ship with different
+   * expression sets we try three strategies in order:
+   *
+   *   1. Match by name — if the model has an expression literally
+   *      called "happy" / "Happy" / "happy.exp3", use it directly.
+   *   2. Fall back to an index derived from the mood's position in
+   *      MOOD_ORDER, modulo the available expression count. That
+   *      gives a deterministic but semantically-weak mapping for
+   *      models that don't name their expressions after moods.
+   *   3. Haru's legacy f01..f08 naming as a last resort.
    */
   setMood(mood) {
     if (!this.model || !this.model.expression) return;
-    const MOOD_TO_FILE = {
-      happy: "f01",
-      surprised: "f02",
-      sad: "f03",
-      curious: "f04",
-      playful: "f05",
-      confused: "f06",
-      shy: "f07",
-      serious: "f08",
-    };
-    const key = (mood || "").toLowerCase();
-    const name = MOOD_TO_FILE[key];
-    if (!name) return;
+    const key = (mood || "").toLowerCase().trim();
+    if (!key) return;
+    const MOOD_ORDER = [
+      "happy",
+      "surprised",
+      "sad",
+      "curious",
+      "playful",
+      "confused",
+      "shy",
+      "serious",
+    ];
+    const moodIdx = MOOD_ORDER.indexOf(key);
+    if (moodIdx < 0) return;
+
+    const names = this.expressionNames || [];
+
+    // Strategy 1: try common name patterns.
+    const nameCandidates = [
+      key,
+      key[0].toUpperCase() + key.slice(1),
+      `${key}.exp3`,
+    ];
+    let chosen = nameCandidates.find((c) =>
+      names.some((n) => n.toLowerCase() === c.toLowerCase())
+    );
+
+    // Strategy 2: index into the discovered expression list.
+    if (!chosen && names.length > 0) {
+      chosen = names[moodIdx % names.length];
+    }
+
+    // Strategy 3: Haru legacy f01..f08.
+    if (!chosen) {
+      chosen = ["f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08"][moodIdx];
+    }
+
+    console.log(`[stage] mood ${key} → expression ${chosen}`);
     try {
-      this.model.expression(name);
+      this.model.expression(chosen);
     } catch (err) {
-      console.warn("expression failed:", err);
+      console.warn(`[stage] expression(${chosen}) failed:`, err);
     }
   }
 }
