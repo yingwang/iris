@@ -51,6 +51,15 @@ export async function transcribe(wavBuffer, { language = "auto", threads = 4 } =
       outBase,
     ];
 
+    // Bias the output toward Simplified Chinese. whisper.cpp's base
+    // model otherwise likes to spit out Traditional characters
+    // ("嗎" instead of "吗"), which then makes Claude reply in
+    // Traditional too. An initial prompt that's pure simplified
+    // nudges the decoder.
+    if (language === "zh" || language === "zh-cn" || language === "auto") {
+      args.push("--prompt", "以下是普通话的句子，请使用简体中文。");
+    }
+
     await new Promise((resolve, reject) => {
       const child = spawn(WHISPER_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
       let stderr = "";
