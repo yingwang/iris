@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>iris</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main>
+      <div id="stage">
+        <canvas id="avatar"></canvas>
+        <video id="self-view" autoplay muted playsinline></video>
+      </div>
+
+      <section id="chat">
+        <div id="transcript"></div>
+        <form id="compose">
+          <input
+            id="input"
+            type="text"
+            placeholder="Type to Iris, or press space to talk…"
+            autocomplete="off"
+          />
+          <button id="mic" type="button" aria-label="hold to talk">🎙️</button>
+        </form>
+        <div id="status">connecting…</div>
+      </section>
+    </main>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

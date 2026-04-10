@@ -1,0 +1,128 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1115;
+  --panel: #181c24;
+  --border: #2a2f3a;
+  --text: #e6e8ec;
+  --muted: #8b93a6;
+  --accent: #7aa2ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+main {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  height: 100vh;
+}
+
+#stage {
+  position: relative;
+  background: radial-gradient(circle at 50% 40%, #1c2030 0%, #0b0d12 80%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+#avatar {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#self-view {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  width: 180px;
+  height: 135px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+  background: #000;
+  transform: scaleX(-1); /* mirror */
+}
+
+#chat {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+}
+
+#transcript {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.msg {
+  max-width: 90%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.msg.user {
+  align-self: flex-end;
+  background: #22304f;
+}
+.msg.assistant {
+  align-self: flex-start;
+  background: #1f232e;
+  border: 1px solid var(--border);
+}
+
+#compose {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+#input {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #12151c;
+  color: var(--text);
+  font-size: 15px;
+}
+#input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+#mic {
+  width: 48px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #12151c;
+  color: var(--text);
+  font-size: 20px;
+  cursor: pointer;
+}
+#mic.recording {
+  background: #b04a4a;
+  border-color: #b04a4a;
+}
+
+#status {
+  padding: 6px 14px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
