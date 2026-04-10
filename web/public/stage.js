@@ -13,19 +13,23 @@
  * MODEL_URL at /models/your-model/your-model.model3.json.
  */
 
-// Two Cubism 4 sample models from pixi-live2d-display's test assets,
-// used as the female / male companion avatars. Both work with the
-// ParamMouthOpenY lip-sync path we drive from the TTS analyser node.
+// Cubism 4 sample models used as the female / male companion avatars.
+// Female: Haru from pixi-live2d-display's test assets (bundled with
+// the library, the classic sample model).
+// Male: Natori from Live2D's official CubismWebSamples repo — a young
+// man in traditional Japanese-style attire with a sword, the closest
+// aesthetic we have to the 古风 / ancient-Chinese look the user asked
+// for. Both URLs can be overridden via IRIS_AVATAR_FEMALE_URL /
+// IRIS_AVATAR_MALE_URL env vars if you want to drop in a custom model.
 //
-// NOTE: earlier we ran into audio issues with Mark when we tried to
-// use Live2D's built-in `model.speak()` — it bypassed our analyser
-// pipeline. We dropped speak() entirely and now drive lip sync via
-// a WebAudio AnalyserNode instead, which works on both models.
+// Both work with the ParamMouthOpenY lip-sync path we drive from the
+// TTS AnalyserNode. We don't use Live2D's built-in model.speak() —
+// it bypasses our analyser pipeline.
 const MODELS = {
   female:
     "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json",
   male:
-    "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/mark_free_t04/mark_free_t04.model3.json",
+    "https://cdn.jsdelivr.net/gh/Live2D/CubismWebSamples@develop/Samples/Resources/Natori/Natori.model3.json",
 };
 
 export class AvatarStage {
