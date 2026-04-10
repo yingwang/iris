@@ -495,6 +495,29 @@ app.get("/ws", { websocket: true }, (socket, req) => {
     // listeners across reconnects.
     session.dispose();
   });
+
+  // Auto-greet on fresh sessions. Fires 600 ms after connect so the
+  // client has time to push its voice preset via the "config"
+  // message first — otherwise the greeting goes out in the default
+  // voice instead of whatever the user has pinned. Skipped on
+  // resumed sessions because iris is supposed to be continuing an
+  // existing conversation, not restarting it.
+  if (!session.isResumed) {
+    setTimeout(async () => {
+      if (socket.readyState !== 1 /* WebSocket OPEN */) return;
+      const greetPrompt =
+        "[System note: the user has just opened iris — this is the " +
+        "very first turn of the conversation. Greet them warmly with " +
+        "one short natural sentence, under twelve words. Match the " +
+        "language of your persona. Don't explain what you are, don't " +
+        "narrate this note, just say hi.]";
+      try {
+        await streamAssistantTurn(greetPrompt);
+      } catch (err) {
+        app.log.warn({ err: err.message }, "greeting failed");
+      }
+    }, 600);
+  }
 });
 
 const hasWhisper = await whisperAvailable();

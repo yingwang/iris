@@ -119,6 +119,16 @@ main {
   background: #1f232e;
   border: 1px solid var(--border);
 }
+.msg.assistant.interrupted {
+  opacity: 0.65;
+  border-left: 2px solid #b04a4a;
+}
+.msg.assistant.interrupted::after {
+  content: " — interrupted";
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+}
 
 #compose {
   display: flex;

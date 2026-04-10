@@ -213,9 +213,15 @@ function handleServerMessage(msg) {
       avatarStage?.setMood(msg.name);
       break;
     case "interrupted":
-      // Server confirmed it aborted the turn. Nothing else to do —
-      // our local interrupt handler already cleared the queue.
+      // Server confirmed it aborted the turn. Our local interrupt
+      // handler already cleared the queue; here we also leave a
+      // subtle trace in the transcript so the user can see that
+      // the reply was cut off rather than iris just forgetting.
       statusEl.textContent = "interrupted";
+      if (currentAssistantBubble) {
+        currentAssistantBubble.classList.add("interrupted");
+        currentAssistantBubble = null;
+      }
       break;
     case "error":
       appendBubble("assistant", `⚠️ ${msg.message}`);

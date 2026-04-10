@@ -387,7 +387,12 @@ export class ClaudeSession {
     } else {
       this.sessionId = randomUUID();
       this.isResumed = false;
-      persistSessionMeta(this.sessionId, currentHash, this.preset);
+      // NB: we DON'T persist meta here. If the server is killed
+      // before the first turn actually fires, the meta on disk
+      // would claim a session that Claude never created, and the
+      // next boot's --resume would fail with "No conversation
+      // found". Instead we persist only after the first successful
+      // send completes (in the send() finally block).
     }
     this.child = null;
     // Incremented every time we spawn a fresh subprocess. Used to
@@ -447,11 +452,10 @@ export class ClaudeSession {
     this.spawnCount = 0;
     this.systemPrompt = buildSystemPrompt(this.preset);
     this.pendingMemoryNote = false;
-    persistSessionMeta(
-      this.sessionId,
-      hashPrompt(this.systemPrompt),
-      this.preset
-    );
+    // Don't persist meta yet — same reason as the constructor:
+    // wait until the first successful send() before writing the
+    // file so we don't leave a dangling "session exists" claim
+    // that Claude can't honor.
   }
 
   /**
@@ -575,15 +579,51 @@ export class ClaudeSession {
       this.pendingMemoryNote = false;
     }
 
+    // Attempt the turn. If Claude replies with a "No conversation
+    // found" error — meaning our --resume target doesn't exist on
+    // Claude's side anymore — reset the session and retry once.
+    // This unsticks any state drift between our meta file and
+    // Claude's session store.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        yield* this.#runTurn(userText);
+        return;
+      } catch (err) {
+        const stale =
+          /No conversation found with session ID/i.test(err?.message || "") ||
+          /session.*not found/i.test(err?.message || "");
+        if (stale && attempt === 0) {
+          console.warn(
+            "claude session",
+            this.sessionId,
+            "is stale, resetting and retrying"
+          );
+          this.resetSession();
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  /**
+   * Actually run one turn against the currently-spawned subprocess.
+   * Separated from send() so we can retry it from the top when a
+   * stale --resume target is detected.
+   */
+  async *#runTurn(userText) {
     this.#ensureChild();
 
-    // Sink: a bounded queue of parsed JSON events from stdout. The
-    // read loop below awaits sink.next() which resolves either with
-    // an event or with an end signal.
     const queue = [];
     let resolver = null;
     let ended = false;
     let endError = null;
+    // Error surfaced via the "result" event rather than a non-zero
+    // process exit. When Claude's --resume target is missing it
+    // emits a result with is_error:true and then usually keeps
+    // running, so we need to translate this into a thrown error
+    // ourselves.
+    let resultError = null;
 
     const sink = {
       push(obj) {
@@ -636,14 +676,35 @@ export class ClaudeSession {
         const obj = queue.shift();
         // A result event marks the end of this turn — the subprocess
         // stays alive waiting for the next user message, so we just
-        // stop yielding and return.
-        if (obj.type === "result") break;
+        // stop yielding and return. But we first check for error
+        // results, which can signal a stale resume target.
+        if (obj.type === "result") {
+          if (obj.is_error) {
+            const msg =
+              (obj.errors && obj.errors.join?.("; ")) ||
+              obj.result ||
+              "unknown error";
+            resultError = new Error(msg);
+          }
+          break;
+        }
         const chunk = extractTextChunk(obj);
         if (chunk) yield chunk;
       }
     } finally {
       if (this.turnSink === sink) this.turnSink = null;
     }
+
+    if (resultError) throw resultError;
+
+    // First successful turn — persist the meta file now that we
+    // know Claude has actually materialized the session on its side.
+    // On subsequent successful turns this is a cheap no-op rewrite.
+    persistSessionMeta(
+      this.sessionId,
+      hashPrompt(this.systemPrompt),
+      this.preset
+    );
   }
 }
 
