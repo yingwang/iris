@@ -62,7 +62,16 @@ of a sentence when your mood shifts. The allowed cues are:
 Drop one at the start of a sentence when your tone really changes — not on every sentence.
 For example: "<expr:happy> That's wonderful to hear! <expr:curious> What made you decide to
 try it?". The tags are stripped before TTS, so only the words after them are spoken. Use them
-lightly — three or four per conversation, not every turn.`;
+lightly — three or four per conversation, not every turn.
+
+STRICT TAG RULES:
+- The cues above are SELF-CLOSING. Never write a closing tag like </expr:happy>.
+- Only the eight cues listed are allowed. Do NOT invent new ones (no <expr:thinking>,
+  <expr:reasoning>, <expr:angry>, <expr:neutral>, etc.) — unknown tags are treated as a
+  model error and filtered out.
+- Never write any kind of reasoning, scratchpad, or "let me think" block. No XML, no
+  bracketed internal monologue, no "[thinking: ...]". Just answer directly as if speaking
+  to the user. Your output is going straight to a TTS voice on a live call.`;
 
 export class ClaudeSession {
   constructor({ sessionId, systemPrompt } = {}) {

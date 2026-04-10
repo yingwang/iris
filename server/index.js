@@ -33,14 +33,12 @@ const PORT = Number(process.env.PORT ?? 3000);
  * though the system prompt forbids emoji / markdown / code, Claude
  * sometimes drops them in anyway — especially emoji after lists. We
  * scrub them server-side so the TTS voice never reads "dog face emoji"
- * out loud. Also strip <expr:...> mood cues so they don't get spoken.
- * The original text still goes into the transcript bubble, so the
- * user sees exactly what Claude wrote.
+ * out loud. Expression tags are already gone by the time text reaches
+ * here (they're stripped by the streaming state machine below), so
+ * this only handles emoji / markdown residue.
  */
 function stripForSpeech(text) {
   return text
-    // Mood tags: <expr:happy>, <expr:curious>, etc.
-    .replace(/<expr:[a-z]+>/gi, "")
     // Extended_Pictographic covers emoji, dingbats, pictographs.
     .replace(/\p{Extended_Pictographic}/gu, "")
     // Variation selectors and zero-width joiners that follow emoji.
@@ -55,16 +53,85 @@ function stripForSpeech(text) {
 }
 
 /**
- * Scan `text` for <expr:NAME> mood cues and return the list of names
- * that appear. Used to forward expression commands to the browser as
- * they arrive in the streaming Claude output.
+ * Streaming expression-tag processor. Claude's output arrives in
+ * arbitrary chunks and can contain:
+ *   - Self-closing mood cues: <expr:happy>, <expr:curious>, …
+ *     → forwarded to the avatar, stripped from chat/TTS text
+ *   - Rogue reasoning blocks: <expr:thinking> ... </expr:thinking>
+ *     → entire block hidden from chat AND TTS (model hallucinated it
+ *       as a scratchpad; the user shouldn't see or hear its insides)
+ *   - Close tags the model invents: </expr:happy>
+ *     → silently dropped
+ *
+ * Tags can straddle chunk boundaries, so we keep a `pending` buffer
+ * holding any incomplete "<…" tail, and a `hiding` flag tracking
+ * whether we're inside an opened thinking block. Returns `{ text,
+ * cues }` — text is safe to display/speak, cues are expression names
+ * to forward to the browser.
  */
-function extractExpressions(text) {
-  const out = [];
-  const re = /<expr:([a-z]+)>/gi;
-  let m;
-  while ((m = re.exec(text)) !== null) out.push(m[1].toLowerCase());
-  return out;
+function createExpressionStream() {
+  let pending = "";
+  let hiding = false;
+  return {
+    push(chunk) {
+      pending += chunk;
+      let out = "";
+      const cues = [];
+      let i = 0;
+      while (i < pending.length) {
+        if (hiding) {
+          const close = pending.indexOf("</expr:thinking>", i);
+          if (close === -1) {
+            // Still hiding, discard everything up to here and wait.
+            pending = "";
+            return { text: out, cues };
+          }
+          i = close + "</expr:thinking>".length;
+          hiding = false;
+          continue;
+        }
+        const lt = pending.indexOf("<", i);
+        if (lt === -1) {
+          out += pending.slice(i);
+          i = pending.length;
+          break;
+        }
+        out += pending.slice(i, lt);
+        const gt = pending.indexOf(">", lt);
+        if (gt === -1) {
+          // Incomplete tag — stash the tail and wait for more.
+          pending = pending.slice(lt);
+          return { text: out, cues };
+        }
+        const tag = pending.slice(lt, gt + 1);
+        const openMatch = /^<expr:([a-z]+)>$/i.exec(tag);
+        if (openMatch) {
+          const name = openMatch[1].toLowerCase();
+          if (name === "thinking") {
+            hiding = true;
+          } else {
+            cues.push(name);
+          }
+        } else if (!/^<\/expr:[a-z]+>$/i.test(tag)) {
+          // Not one of our tags — pass it through untouched so we
+          // don't eat angle brackets that belong to real content.
+          out += tag;
+        }
+        i = gt + 1;
+      }
+      pending = "";
+      return { text: out, cues };
+    },
+    flush() {
+      // On stream end, anything still in `pending` is a broken tag
+      // or truncated text; emit whatever is safe. If we were hiding,
+      // drop the partial reasoning entirely.
+      const rest = hiding ? "" : pending;
+      pending = "";
+      hiding = false;
+      return rest;
+    },
+  };
 }
 
 /**
@@ -128,6 +195,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
     app.log.info({ prompt: userText.slice(0, 200) }, "→ claude");
     const turnStartedAt = Date.now();
     const isInterrupted = () => interruptedAt > turnStartedAt;
+    const exprStream = createExpressionStream();
     let buffer = "";
     let full = "";
 
@@ -171,28 +239,42 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       }
     };
 
-    let expressionScanFrom = 0;
     for await (const chunk of session.send(userText)) {
       if (isInterrupted()) break;
-      send({ type: "assistant_chunk", text: chunk });
-      full += chunk;
-      buffer += chunk;
-      // Scan only newly-arrived bytes for expression cues so we
-      // don't re-fire ones we already forwarded.
-      const newSlice = full.slice(expressionScanFrom);
-      const cues = extractExpressions(newSlice);
-      if (cues.length) {
-        for (const name of cues) send({ type: "avatar_expression", name });
-        expressionScanFrom = full.length;
+      // Run the raw Claude chunk through the expression processor:
+      // strips <expr:...> tags, hides <expr:thinking> reasoning
+      // blocks, and tells us which mood cues to forward. Only the
+      // returned `text` ever reaches the chat bubble or TTS.
+      const { text: cleaned, cues } = exprStream.push(chunk);
+      for (const name of cues) send({ type: "avatar_expression", name });
+      if (cleaned) {
+        send({ type: "assistant_chunk", text: cleaned });
+        full += cleaned;
+        buffer += cleaned;
       }
       // Try to emit speech as sentences complete (non-blocking flush
       // semantics: we await but it's usually sub-second per sentence).
       await flush(false);
     }
+    // Drain any trailing text the processor was holding for tag
+    // completion. If we were mid-thinking-block, that partial is
+    // dropped.
+    const tail = exprStream.flush();
+    if (tail && !isInterrupted()) {
+      send({ type: "assistant_chunk", text: tail });
+      full += tail;
+      buffer += tail;
+    }
     if (!isInterrupted()) {
       await flush(true);
     }
-    send({ type: "assistant_end" });
+    // Only signal end-of-turn for turns that actually completed.
+    // Interrupted turns already triggered an `interrupted` message
+    // when cancel() fired; emitting a stale assistant_end here races
+    // the next turn and can split its transcript bubble in half.
+    if (!isInterrupted()) {
+      send({ type: "assistant_end" });
+    }
     return full;
   };
 

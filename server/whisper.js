@@ -66,23 +66,23 @@ async function runWhisper(wavPath, outBase, language, threads) {
 
 /**
  * iris only supports English and Simplified Chinese. Whisper's auto
- * language ID is happy to return Korean / Japanese / German / etc. on
- * short noisy clips, which then sends garbage to Claude. We post-
- * validate: if the transcription contains characters outside the
- * English or Chinese writing systems, re-run with a forced language.
+ * language ID is happy to return Korean / Japanese / Thai / Arabic /
+ * German / etc. on short noisy clips, which then sends garbage to
+ * Claude. We post-validate with a strict allowlist: only CJK-present
+ * text counts as zh, only pure Latin/ASCII counts as en, and anything
+ * else (Thai, Hangul, Kana, Cyrillic, Arabic, Hebrew, Devanagari…)
+ * falls through to "other" and triggers a forced-language retry.
  */
 function classifyScript(text) {
-  // CJK unified ideographs + CJK punctuation → Chinese
-  if (/[\u4e00-\u9fff\u3000-\u303f]/.test(text)) return "zh";
-  // Hangul (Korean) → reject
-  if (/[\uac00-\ud7af\u1100-\u11ff]/.test(text)) return "other";
-  // Hiragana / Katakana (Japanese) → reject
-  if (/[\u3040-\u309f\u30a0-\u30ff]/.test(text)) return "other";
-  // Cyrillic (Russian etc.) → reject
-  if (/[\u0400-\u04ff]/.test(text)) return "other";
-  // Arabic → reject
-  if (/[\u0600-\u06ff]/.test(text)) return "other";
-  // Default: ASCII/Latin → English (close enough)
+  // CJK unified ideographs → Chinese
+  if (/[\u4e00-\u9fff]/.test(text)) return "zh";
+  // Any character outside the allowed Latin ranges + common
+  // punctuation → reject. u0000-u024f covers ASCII + Latin-1
+  // Supplement + Latin Extended-A/B; u1e00-u1eff is Latin Extended
+  // Additional; u2000-u206f is general punctuation (en/em dashes,
+  // curly quotes, etc.). Anything else means a non-Latin script
+  // leaked in.
+  if (/[^\s\u0000-\u024f\u1e00-\u1eff\u2000-\u206f]/.test(text)) return "other";
   return "en";
 }
 
@@ -96,13 +96,24 @@ export async function transcribe(wavBuffer, { language = "auto", threads = 4 } =
 
     let text = await runWhisper(wavPath, outBase, language, threads);
 
-    // If the caller asked for auto, validate the detected script and
-    // force a retry in English when whisper picked a non-en/zh
-    // language. Re-running is ~1 s on tiny.bin which is acceptable.
-    if ((language === "auto") && text) {
+    // If the caller asked for auto, validate the detected script.
+    // Whisper auto-detect frequently mis-IDs short Chinese clips as
+    // Arabic / Korean / Japanese. Since iris only supports en and
+    // zh, we force-retry in the supported languages and pick the
+    // output whose script actually matches. Two runs of tiny.bin is
+    // ~1.8 s which is acceptable for the rare fallback path.
+    if (language === "auto" && text) {
       const kind = classifyScript(text);
       if (kind === "other") {
-        text = await runWhisper(wavPath, outBase, "en", threads);
+        // Try Chinese first — that's the common failure mode (short
+        // Mandarin clip → Arabic transliteration).
+        const zhText = await runWhisper(wavPath, outBase, "zh", threads);
+        if (classifyScript(zhText) === "zh") {
+          text = zhText;
+        } else {
+          // Not Chinese either → force English.
+          text = await runWhisper(wavPath, outBase, "en", threads);
+        }
       }
     }
 

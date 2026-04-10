@@ -220,7 +220,11 @@ function sendText(text) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   appendBubble("user", text);
   statusEl.textContent = "iris is thinking…";
-  ws.send(JSON.stringify({ type: "user_text", text }));
+  // Typed turns deserve the same facial context as spoken turns —
+  // the vision hint is useful whether the user's hands are on the
+  // keyboard or not.
+  const expression = faceTracker ? faceTracker.snapshot() : null;
+  ws.send(JSON.stringify({ type: "user_text", text, expression }));
 }
 
 async function sendAudio(wavBlob) {
@@ -262,6 +266,10 @@ let ttsSpeaking = false;
 // don't barge-in and kill the turn.
 let ttsStartedAt = 0;
 const INTERRUPT_GRACE_MS = 1000;
+// Set to true when onSpeechStart decides this segment is echo and
+// should be ignored. onSpeechEnd then drops the clip instead of
+// shipping it to whisper as a bogus user turn.
+let dropCurrentSegment = false;
 
 async function initVoice() {
   try {
@@ -271,24 +279,32 @@ async function initVoice() {
         // interrupt — but only after a grace window. The first ~1 s
         // of her speech has the highest echo leak through the
         // built-in cancellation, and a stray fragment would otherwise
-        // instantly kill the turn.
+        // instantly kill the turn. When we decide it's echo we set
+        // dropCurrentSegment so the matching onSpeechEnd throws the
+        // captured audio away instead of uploading it.
         if (playing) {
           const sinceStart = Date.now() - ttsStartedAt;
           if (sinceStart < INTERRUPT_GRACE_MS) {
-            // Ignore — likely echo. Discard the speech segment.
+            dropCurrentSegment = true;
             return;
           }
           interruptIris();
         }
+        dropCurrentSegment = false;
         statusEl.textContent = "listening…";
         micBtn.classList.add("recording");
       },
       onSpeechEnd: async (wavBlob) => {
+        if (dropCurrentSegment) {
+          dropCurrentSegment = false;
+          return;
+        }
         micBtn.classList.remove("recording");
         statusEl.textContent = "transcribing…";
         await sendAudio(wavBlob);
       },
       onMisfire: () => {
+        dropCurrentSegment = false;
         micBtn.classList.remove("recording");
         statusEl.textContent = "ready";
       },
@@ -320,6 +336,10 @@ function interruptIris() {
   playQueue.length = 0;
   playing = false;
   ttsSpeaking = false;
+  // The server will suppress assistant_end for the interrupted turn,
+  // so if we don't reset the bubble pointer here the next reply's
+  // chunks would keep appending to the stopped bubble.
+  currentAssistantBubble = null;
   avatarStage?.setMouthOpen(0);
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "interrupt" }));
