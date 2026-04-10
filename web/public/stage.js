@@ -124,16 +124,25 @@ export class AvatarStage {
 
     // Discover the model's expression catalogue so setMood can map
     // Claude's logical mood cues to real file names. pixi-live2d-
-    // display exposes the manager on internalModel.motionManager.
+    // display exposes the manager on internalModel.motionManager,
+    // and as a fallback the raw Expressions array lives on
+    // internalModel.settings.expressions (straight from model3.json).
     try {
       const mgr = this.model.internalModel?.motionManager?.expressionManager;
-      const defs = mgr?.definitions || mgr?._definitions || [];
+      const defsA = mgr?.definitions || mgr?._definitions || [];
+      const defsB =
+        this.model.internalModel?.settings?.expressions ||
+        this.model.internalModel?.settings?.Expressions ||
+        [];
+      const defs = defsA.length ? defsA : defsB;
       this.expressionNames = defs
         .map((d) => d?.Name || d?.name || d?.File || d?.file || "")
         .filter(Boolean);
+      // Log as a plain string so it survives a copy-paste of the
+      // devtools console (Array(N) otherwise).
       console.log(
-        `[stage] ${personaKey} expressions:`,
-        this.expressionNames
+        `[stage] ${personaKey} expressions (${this.expressionNames.length}): ` +
+          this.expressionNames.join(", ")
       );
     } catch (err) {
       console.warn("[stage] could not read expression list:", err);
@@ -181,6 +190,10 @@ export class AvatarStage {
       this.resizeObserver?.disconnect();
     } catch {}
     this.resizeObserver = null;
+    if (this.idleInterval) {
+      clearInterval(this.idleInterval);
+      this.idleInterval = null;
+    }
     if (this.model) {
       try {
         this.model.destroy();
@@ -202,14 +215,20 @@ export class AvatarStage {
     if (!this.model) return;
     const playRandomIdle = () => {
       try {
-        // Priority 1 = idle; 2 = normal; 3 = force. Idle so Haru will
-        // happily interrupt with a lip-sync when TTS plays.
+        // Priority 1 = idle; 2 = normal; 3 = force. Idle so the
+        // model happily interrupts with a lip-sync when TTS plays.
         this.model.motion("Idle", undefined, 1);
       } catch (_) {}
     };
     playRandomIdle();
-    // Retrigger every ~10 s so she doesn't freeze between idle cycles.
-    setInterval(playRandomIdle, 10000);
+    // Clear any previous idle loop from a prior #loadModel call so
+    // swapping models doesn't leave a zombie interval firing random
+    // motions on the new model.
+    if (this.idleInterval) clearInterval(this.idleInterval);
+    // Every 20s (was 10s) — slower cadence reduces the "looks random"
+    // feeling the user reported, and breath/blink auto-plays on top
+    // so she doesn't actually freeze between cycles.
+    this.idleInterval = setInterval(playRandomIdle, 20000);
   }
 
   fitModel() {
@@ -337,24 +356,46 @@ export class AvatarStage {
 
     const names = this.expressionNames || [];
 
-    // Strategy 1: try common name patterns.
+    // Strategy 1: match by name. Covers models whose expressions
+    // are literally called "happy" / "sad" / etc., plus the Haru
+    // legacy "f01..f08" mapping handled explicitly below.
     const nameCandidates = [
       key,
       key[0].toUpperCase() + key.slice(1),
       `${key}.exp3`,
+      `${key}.exp3.json`,
     ];
     let chosen = nameCandidates.find((c) =>
       names.some((n) => n.toLowerCase() === c.toLowerCase())
     );
 
-    // Strategy 2: index into the discovered expression list.
-    if (!chosen && names.length > 0) {
-      chosen = names[moodIdx % names.length];
+    // Strategy 2: Haru's legacy f01..f08 slot mapping, but only if
+    // the discovered names actually include those slots.
+    if (!chosen) {
+      const haruSlots = ["f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08"];
+      const haruSlot = haruSlots[moodIdx];
+      if (
+        names.some(
+          (n) =>
+            n.toLowerCase() === haruSlot ||
+            n.toLowerCase() === `${haruSlot}.exp3` ||
+            n.toLowerCase() === `${haruSlot}.exp3.json`
+        )
+      ) {
+        chosen = haruSlot;
+      }
     }
 
-    // Strategy 3: Haru legacy f01..f08.
+    // Explicitly DON'T fall back to arbitrary index mapping on
+    // models whose expression names are nonsemantic (Natori's
+    // exp_01..exp_11, for example). A random-looking expression
+    // change feels worse than no change at all — iris just stays
+    // on her current face.
     if (!chosen) {
-      chosen = ["f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08"][moodIdx];
+      console.log(
+        `[stage] mood ${key}: no semantic expression match, skipping`
+      );
+      return;
     }
 
     console.log(`[stage] mood ${key} → expression ${chosen}`);
