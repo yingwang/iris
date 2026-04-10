@@ -18,9 +18,21 @@ const transcriptEl = document.getElementById("transcript");
 const form = document.getElementById("compose");
 const input = document.getElementById("input");
 const micBtn = document.getElementById("mic");
+const langSel = document.getElementById("lang");
 const selfView = document.getElementById("self-view");
 const avatarCanvas = document.getElementById("avatar");
 const faceDebugEl = document.getElementById("face-debug");
+
+// Restore the user's preferred STT language from localStorage so the
+// choice persists across reloads. Values: "auto" | "en" | "zh".
+const LANG_STORAGE_KEY = "iris.sttLanguage";
+const savedLang = localStorage.getItem(LANG_STORAGE_KEY);
+if (savedLang && ["auto", "en", "zh"].includes(savedLang)) {
+  langSel.value = savedLang;
+}
+langSel.addEventListener("change", () => {
+  localStorage.setItem(LANG_STORAGE_KEY, langSel.value);
+});
 
 // --- WebSocket ----------------------------------------------------------
 
@@ -234,13 +246,15 @@ async function sendAudio(wavBlob) {
     return;
   }
   const data = await blobToBase64(wavBlob);
-  // Always auto-detect — Whisper is good at per-utterance language
-  // ID. That lets the user switch freely between English and
-  // Chinese without toggling anything.
+  // Respect the language selector: "auto" lets whisper decide (with
+  // our en/zh post-validation), "en" / "zh" force the language on
+  // the server so we can route to a language-specific model and
+  // skip the retry dance.
+  const language = langSel.value || "auto";
   const expression = faceTracker ? faceTracker.snapshot() : null;
   statusEl.textContent = "uploading audio…";
   ws.send(
-    JSON.stringify({ type: "user_audio", data, language: "auto", expression })
+    JSON.stringify({ type: "user_audio", data, language, expression })
   );
 }
 

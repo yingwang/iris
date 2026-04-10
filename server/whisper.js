@@ -25,9 +25,21 @@ const WHISPER_BIN = join(WHISPER_ROOT, "build", "bin", "whisper-cli");
 // Arabic. Set IRIS_WHISPER_MODEL to ggml-base.bin (~2 s) or
 // ggml-tiny.bin (~0.9 s) for lower latency, or point it at an
 // absolute path for a bigger model.
-const WHISPER_MODEL =
-  process.env.IRIS_WHISPER_MODEL ||
-  join(WHISPER_ROOT, "models", "ggml-small-q5_1.bin");
+//
+// Per-language overrides let you pair a small/fast English model
+// with a larger/accurate Chinese one. When the client forces a
+// specific language in the UI, the server picks the corresponding
+// model below; "auto" keeps using the shared default.
+const DEFAULT_MODEL = join(WHISPER_ROOT, "models", "ggml-small-q5_1.bin");
+const WHISPER_MODEL = process.env.IRIS_WHISPER_MODEL || DEFAULT_MODEL;
+const WHISPER_MODEL_EN = process.env.IRIS_WHISPER_MODEL_EN || WHISPER_MODEL;
+const WHISPER_MODEL_ZH = process.env.IRIS_WHISPER_MODEL_ZH || WHISPER_MODEL;
+
+function modelFor(language) {
+  if (language === "en") return WHISPER_MODEL_EN;
+  if (language === "zh") return WHISPER_MODEL_ZH;
+  return WHISPER_MODEL;
+}
 
 /**
  * Transcribe a WAV buffer. Returns the transcription as a single string,
@@ -41,7 +53,7 @@ const WHISPER_MODEL =
 async function runWhisper(wavPath, outBase, language, threads) {
   const args = [
     "-m",
-    WHISPER_MODEL,
+    modelFor(language),
     "-f",
     wavPath,
     "-l",
@@ -129,11 +141,14 @@ export async function transcribe(wavBuffer, { language = "auto", threads = 4 } =
   }
 }
 
-/** Quick health check: does the binary and model exist? */
+/** Quick health check: does the binary and default model exist? */
 export async function whisperAvailable() {
   try {
     const { stat } = await import("node:fs/promises");
     await stat(WHISPER_BIN);
+    // We only require the default model to be present — per-language
+    // overrides are optional and will fail loudly at request time if
+    // their configured path is missing.
     await stat(WHISPER_MODEL);
     return true;
   } catch {

@@ -152,6 +152,22 @@ main {
   background: #b04a4a;
   border-color: #b04a4a;
 }
+#lang {
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #12151c;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  text-align: center;
+}
+#lang:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 
 #status {
   padding: 6px 14px 10px;
