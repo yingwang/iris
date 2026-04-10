@@ -15,10 +15,19 @@
  * the user grins at the camera, "怎么一脸困惑？" when they furrow.
  */
 
+// We import the JS module from jsdelivr (not esm.sh) because MediaPipe
+// tasks-vision loads its WASM files at runtime from a path you pass to
+// FilesetResolver, and esm.sh doesn't serve the raw .wasm binaries
+// reliably — that causes "ModelFactory not set" when it tries to
+// construct a task. jsdelivr serves npm packages as static files so
+// the same origin can provide both the JS and the WASM.
 import {
   FilesetResolver,
   FaceLandmarker,
-} from "https://esm.sh/@mediapipe/tasks-vision@0.10.17";
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17/vision_bundle.mjs";
+
+const WASM_BASE =
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17/wasm";
 
 const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
@@ -33,16 +42,28 @@ export class FaceTracker {
   }
 
   async start() {
-    const filesetResolver = await FilesetResolver.forVisionTasks(
-      "https://esm.sh/@mediapipe/tasks-vision@0.10.17/wasm"
-    );
-    this.landmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
-      baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
-      outputFaceBlendshapes: true,
-      outputFacialTransformationMatrixes: false,
-      runningMode: "VIDEO",
-      numFaces: 1,
-    });
+    const filesetResolver = await FilesetResolver.forVisionTasks(WASM_BASE);
+    // Try GPU delegate first; fall back to CPU on Intel Macs where
+    // WebGL compute shaders can be flaky.
+    const baseOptions = { modelAssetPath: MODEL_URL };
+    try {
+      this.landmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+        baseOptions: { ...baseOptions, delegate: "GPU" },
+        outputFaceBlendshapes: true,
+        outputFacialTransformationMatrixes: false,
+        runningMode: "VIDEO",
+        numFaces: 1,
+      });
+    } catch (err) {
+      console.warn("GPU face landmarker failed, falling back to CPU:", err);
+      this.landmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+        baseOptions: { ...baseOptions, delegate: "CPU" },
+        outputFaceBlendshapes: true,
+        outputFacialTransformationMatrixes: false,
+        runningMode: "VIDEO",
+        numFaces: 1,
+      });
+    }
     this.running = true;
     this.loop();
   }
