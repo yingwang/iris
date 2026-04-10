@@ -32,10 +32,16 @@ import { join } from "node:path";
  *
  * IDs are stable, so they're safe to persist in localStorage.
  */
+//
+// Only voices verified to exist in `edge-tts --list-voices`. Earlier
+// iterations had guessed names (Xiaohan, Xiaomo, Yunze, Zhiwei) that
+// silently fail — the browser hears nothing when those presets are
+// picked. The set below is the full mainland + regional Mandarin
+// catalogue as of edge-tts 6.x; if Microsoft adds more later we can
+// drop them in.
 export const VOICE_PRESETS = {
-  // Female presets — all use Ava (en-US, most natural conversational
-  // female) and rotate through four Chinese voices with distinct
-  // personalities.
+  // Female presets. Only two mainland neural voices ship (Xiaoxiao
+  // and Xiaoyi); we add a Taiwan voice for regional flavor.
   "female-xiaoxiao": {
     gender: "female",
     label: "她 · 温柔",
@@ -44,62 +50,43 @@ export const VOICE_PRESETS = {
   },
   "female-xiaoyi": {
     gender: "female",
-    label: "她 · 甜美",
+    label: "她 · 活泼",
     en: "en-US-AvaNeural",
     zh: "zh-CN-XiaoyiNeural",
   },
-  "female-xiaohan": {
+  "female-hsiaoyu": {
     gender: "female",
-    label: "她 · 知性",
+    label: "她 · 温润 (台)",
     en: "en-US-AvaNeural",
-    zh: "zh-CN-XiaohanNeural",
-  },
-  "female-xiaomo": {
-    gender: "female",
-    label: "她 · 亲切",
-    en: "en-US-AvaNeural",
-    zh: "zh-CN-XiaomoNeural",
+    zh: "zh-TW-HsiaoYuNeural",
   },
 
-  // Male presets — all use Andrew (en-US) and rotate Chinese voices.
-  // "少年" uses the Taiwan zh-TW-ZhiweiNeural voice, which has a
-  // softer and more literary quality than the mainland zh-CN male
-  // voices — closest thing edge-tts has to a 古风 young-scholar feel.
+  // Male presets. Four mainland neural voices plus a Taiwan
+  // "少年" option which has a softer / more literary feel — the
+  // closest thing edge-tts has to a 古风 young-scholar voice.
   "male-yunxi": {
     gender: "male",
     label: "他 · 温柔",
     en: "en-US-AndrewNeural",
     zh: "zh-CN-YunxiNeural",
   },
-  "male-yunze": {
+  "male-yunyang": {
     gender: "male",
     label: "他 · 沉稳",
     en: "en-US-AndrewNeural",
-    zh: "zh-CN-YunzeNeural",
+    zh: "zh-CN-YunyangNeural",
   },
-  "male-zhiwei": {
+  "male-yunjian": {
+    gender: "male",
+    label: "他 · 豪迈",
+    en: "en-US-AndrewNeural",
+    zh: "zh-CN-YunjianNeural",
+  },
+  "male-yunjhe": {
     gender: "male",
     label: "他 · 少年 (台)",
     en: "en-US-AndrewNeural",
-    zh: "zh-TW-ZhiweiNeural",
-  },
-  "male-yunyang": {
-    gender: "male",
-    label: "他 · 正式",
-    en: "en-US-AndrewNeural",
-    zh: "zh-CN-YunyangNeural",
-  },
-  // 古风书生 preset — pairs the warm Yunxi voice with a static
-  // photographic portrait rendered via PortraitStage (canvas 2D
-  // with mouth + blink + breathing overlays). avatarUrl points at
-  // an image file instead of a .model3.json; main.js picks the
-  // renderer based on the extension.
-  "male-scholar": {
-    gender: "male",
-    label: "他 · 古风书生",
-    en: "en-US-AndrewNeural",
-    zh: "zh-CN-YunxiNeural",
-    avatarUrl: "/avatars/hanfu-scholar.png",
+    zh: "zh-TW-YunJheNeural",
   },
 };
 
