@@ -221,6 +221,11 @@ app.get("/api/config", async () => {
     id,
     label: cfg.label,
     gender: cfg.gender,
+    // Optional per-preset avatar URL override. When present it
+    // wins over the gender-based default; if the URL ends in an
+    // image extension the client uses PortraitStage instead of
+    // Live2D.
+    avatarUrl: cfg.avatarUrl || null,
   }));
   return {
     persona: readPersona(),

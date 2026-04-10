@@ -13,3 +13,10 @@ dist/
 persona.md
 memory.md
 .iris/
+
+# Personal avatar images dropped into the portrait renderer path.
+# PortraitStage supports any PNG/JPG, but the actual file is a user
+# choice (often an AI-generated still of their character) so we
+# keep it out of git.
+web/public/avatars/*
+!web/public/avatars/.gitkeep

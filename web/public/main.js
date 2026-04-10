@@ -12,6 +12,7 @@ import { blobToBase64 } from "/audio.js";
 import { VADRecorder } from "/vad.js";
 import { FaceTracker } from "/face.js";
 import { AvatarStage } from "/stage.js";
+import { PortraitStage } from "/portrait.js";
 
 const statusEl = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
@@ -36,8 +37,11 @@ const PRESET_STORAGE_KEY = "iris.voicePreset";
 const RATE_STORAGE_KEY = "iris.ttsRate";
 
 // Preset metadata lookup table, populated from /api/config on boot.
-// Shape: { "female-xiaoxiao": { gender: "female", label: "她 · 温柔" }, ... }
+// Shape: { "female-xiaoxiao": { gender, label, avatarUrl }, ... }
 const presetInfo = {};
+// Fallback avatar URLs per gender, overridden by server-side
+// IRIS_AVATAR_*_URL env vars. Populated in populatePresetDropdown.
+const defaultAvatarUrls = { female: null, male: null };
 
 const savedLang = localStorage.getItem(LANG_STORAGE_KEY);
 if (savedLang && ["auto", "en", "zh"].includes(savedLang)) {
@@ -66,9 +70,18 @@ async function populatePresetDropdown() {
   const presets = data.presets || [];
   const groups = { female: [], male: [] };
   for (const p of presets) {
-    presetInfo[p.id] = { gender: p.gender, label: p.label };
+    presetInfo[p.id] = {
+      gender: p.gender,
+      label: p.label,
+      avatarUrl: p.avatarUrl || null,
+    };
     (groups[p.gender] || (groups.other = [])).push(p);
   }
+  // Cache the server's avatar URL overrides so initAvatar and any
+  // preset swap can fall back to them when the preset itself
+  // doesn't specify one.
+  defaultAvatarUrls.female = data.avatarFemaleUrl || null;
+  defaultAvatarUrls.male = data.avatarMaleUrl || null;
   personaSel.innerHTML = "";
   for (const [gender, label] of [["female", "女声"], ["male", "男声"]]) {
     if (!groups[gender]?.length) continue;
@@ -100,12 +113,13 @@ async function populatePresetDropdown() {
   }
 }
 
-personaSel.addEventListener("change", () => {
+personaSel.addEventListener("change", async () => {
   localStorage.setItem(PRESET_STORAGE_KEY, personaSel.value);
   pushConfig();
-  // Swap Live2D model in place — derive gender from preset metadata.
-  const gender = presetInfo[personaSel.value]?.gender || "female";
-  avatarStage?.setPersona(gender);
+  // Rebuild the stage to reflect the new preset. If the avatar
+  // URL type is the same as the current stage (Live2D vs Portrait)
+  // we can swap the model in place; otherwise we fully rebuild.
+  await rebuildStageForPreset(personaSel.value);
 });
 
 // Accept any previously stored rate only if it still matches one of
@@ -604,36 +618,77 @@ async function initFace() {
   }
 }
 
-async function initAvatar() {
-  try {
-    // Fetch any custom avatar URL overrides from the server before
-    // constructing the stage, so a configured IRIS_AVATAR_MALE_URL
-    // (for example a 古风 Chinese model) is used from first paint
-    // instead of only after a persona swap.
-    let overrides = {};
+/**
+ * Decide which stage renderer to use for a given preset id and
+ * instantiate it, tearing down the previous stage if any.
+ *
+ * PortraitStage is used when the preset supplies an avatarUrl
+ * pointing at an image file (.png / .jpg / .jpeg / .webp). Anything
+ * else — including the default null — falls through to AvatarStage
+ * with the built-in or env-configured Live2D model for the preset's
+ * gender.
+ */
+function pickAvatarUrl(presetId) {
+  const info = presetInfo[presetId];
+  if (info?.avatarUrl) return info.avatarUrl;
+  const gender = info?.gender || "female";
+  return defaultAvatarUrls[gender] || null;
+}
+
+function isImageUrl(url) {
+  if (!url) return false;
+  const u = url.split("?")[0].toLowerCase();
+  return /\.(png|jpe?g|webp|gif)$/.test(u);
+}
+
+async function rebuildStageForPreset(presetId) {
+  const avatarUrl = pickAvatarUrl(presetId);
+  const gender = presetInfo[presetId]?.gender || "female";
+  const wantPortrait = isImageUrl(avatarUrl);
+
+  // If the stage type hasn't changed, swap in place where possible.
+  if (avatarStage && !wantPortrait && avatarStage instanceof AvatarStage) {
     try {
-      const r = await fetch("/api/config");
-      if (r.ok) {
-        const data = await r.json();
-        overrides = {
-          female: data.avatarFemaleUrl || undefined,
-          male: data.avatarMaleUrl || undefined,
-        };
-      }
-    } catch {}
-    // Derive avatar gender from the selected voice preset. The
-    // preset metadata is populated earlier by populatePresetDropdown.
-    const initialGender = presetInfo[personaSel.value]?.gender || "female";
-    avatarStage = new AvatarStage(avatarCanvas, {
-      persona: initialGender,
-      modelOverrides: overrides,
-    });
-    await avatarStage.init();
+      await avatarStage.setPersona(gender);
+      return;
+    } catch (err) {
+      console.warn("in-place setPersona failed, rebuilding:", err);
+    }
+  }
+
+  // Otherwise tear down and rebuild.
+  if (avatarStage) {
+    try {
+      avatarStage.destroy?.();
+    } catch (err) {
+      console.warn("stage destroy failed:", err);
+    }
+    avatarStage = null;
+  }
+
+  try {
+    if (wantPortrait) {
+      avatarStage = new PortraitStage(avatarCanvas, { imageUrl: avatarUrl });
+      await avatarStage.init();
+    } else {
+      avatarStage = new AvatarStage(avatarCanvas, {
+        persona: gender,
+        modelOverrides: {
+          female: defaultAvatarUrls.female || undefined,
+          male: defaultAvatarUrls.male || undefined,
+        },
+      });
+      await avatarStage.init();
+    }
     statusEl.textContent = "avatar ready · click anywhere to start";
   } catch (err) {
-    console.error("avatar init failed:", err);
+    console.error("avatar rebuild failed:", err);
     statusEl.textContent = "avatar failed to load — text still works";
   }
+}
+
+async function initAvatar() {
+  await rebuildStageForPreset(personaSel.value);
 }
 
 // --- boot ---------------------------------------------------------------

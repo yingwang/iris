@@ -144,6 +144,34 @@ export class AvatarStage {
     await this.#loadModel(personaKey);
   }
 
+  /**
+   * Tear down the PIXI application and free the WebGL context so
+   * the canvas can be reused by a different stage renderer (for
+   * example PortraitStage's 2D context). Safe to call multiple
+   * times.
+   */
+  destroy() {
+    try {
+      this.resizeObserver?.disconnect();
+    } catch {}
+    this.resizeObserver = null;
+    if (this.model) {
+      try {
+        this.model.destroy();
+      } catch {}
+      this.model = null;
+    }
+    if (this.app) {
+      try {
+        // removeView:false keeps the <canvas> element alive so the
+        // next stage can grab a new 2d/webgl context from it.
+        this.app.destroy(false, { children: true, texture: true });
+      } catch {}
+      this.app = null;
+    }
+    this.ready = false;
+  }
+
   startIdleLoop() {
     if (!this.model) return;
     const playRandomIdle = () => {

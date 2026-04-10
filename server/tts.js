@@ -89,6 +89,18 @@ export const VOICE_PRESETS = {
     en: "en-US-AndrewNeural",
     zh: "zh-CN-YunyangNeural",
   },
+  // 古风书生 preset — pairs the warm Yunxi voice with a static
+  // photographic portrait rendered via PortraitStage (canvas 2D
+  // with mouth + blink + breathing overlays). avatarUrl points at
+  // an image file instead of a .model3.json; main.js picks the
+  // renderer based on the extension.
+  "male-scholar": {
+    gender: "male",
+    label: "他 · 古风书生",
+    en: "en-US-AndrewNeural",
+    zh: "zh-CN-YunxiNeural",
+    avatarUrl: "/avatars/hanfu-scholar.png",
+  },
 };
 
 export const DEFAULT_PRESET = process.env.IRIS_VOICE_PRESET || "female-xiaoxiao";
