@@ -17,7 +17,7 @@ Status: **early scaffolding** — only text chat streaming works today. Roadmap 
 
 - **Brain**: Claude Code CLI (`claude -p … --output-format stream-json`) as a subprocess. Uses your existing Claude subscription — no API key needed.
 - **STT**: whisper.cpp (base.ggml) running locally on CPU. See `install-whisper.sh`.
-- **TTS**: macOS built-in `say` command, because Piper's macOS x64 release is broken (missing dylibs). Tingting for Chinese, Samantha for English — both are neural voices that sound fine. Apple Silicon users can swap in Piper later.
+- **TTS**: [edge-tts](https://github.com/rany2/edge-tts) — a Python CLI that talks to Microsoft Edge's neural voice backend. Free, no API key, needs internet. Defaults to `en-US-AvaNeural` / `zh-CN-XiaoxiaoNeural`. Install with `pip install edge-tts`. Voices sound an order of magnitude better than macOS `say`, especially for Chinese.
 - **Avatar**: Live2D Cubism via `pixi-live2d-display` (not wired yet).
 - **Tracking**: MediaPipe Holistic for user face + driving the avatar's blendshape-like parameters (not wired yet).
 
