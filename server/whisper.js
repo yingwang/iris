@@ -55,12 +55,11 @@ export async function transcribe(wavBuffer, { language = "auto", threads = 4 } =
       outBase,
     ];
 
-    // Bias the output toward Simplified Chinese. whisper.cpp's base
-    // model otherwise likes to spit out Traditional characters
-    // ("嗎" instead of "吗"), which then makes Claude reply in
-    // Traditional too. An initial prompt that's pure simplified
-    // nudges the decoder.
-    if (language === "zh" || language === "zh-cn" || language === "auto") {
+    // Only bias toward Simplified Chinese when we know the user is
+    // speaking Chinese. An "auto" prompt bias would force Chinese on
+    // English speech too, which is worse than the Traditional-vs-
+    // Simplified issue we were trying to fix.
+    if (language === "zh" || language === "zh-cn") {
       args.push("--prompt", "以下是普通话的句子，请使用简体中文。");
     }
 

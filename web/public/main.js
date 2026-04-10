@@ -218,11 +218,14 @@ async function sendAudio(wavBlob) {
     return;
   }
   const data = await blobToBase64(wavBlob);
-  // Hint whisper about the primary language; "auto" also works.
-  const language = (navigator.language || "").startsWith("zh") ? "zh" : "auto";
+  // Always auto-detect — Whisper is good at per-utterance language
+  // ID. That lets the user switch freely between English and
+  // Chinese without toggling anything.
   const expression = faceTracker ? faceTracker.snapshot() : null;
   statusEl.textContent = "uploading audio…";
-  ws.send(JSON.stringify({ type: "user_audio", data, language, expression }));
+  ws.send(
+    JSON.stringify({ type: "user_audio", data, language: "auto", expression })
+  );
 }
 
 // --- form submit --------------------------------------------------------
