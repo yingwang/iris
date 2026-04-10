@@ -122,18 +122,20 @@ main {
 
 #compose {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 12px;
   border-top: 1px solid var(--border);
 }
 #input {
-  flex: 1;
+  flex: 1 1 100%;
   padding: 10px 14px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: #12151c;
   color: var(--text);
   font-size: 15px;
+  min-width: 0;
 }
 #input:focus {
   outline: none;

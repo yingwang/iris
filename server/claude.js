@@ -24,10 +24,22 @@
  */
 
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+/**
+ * Cross-session event bus. The HTTP settings endpoints emit events
+ * here when persona.md or memory.md changes; every active
+ * ClaudeSession subscribes and reacts. Persona changes reset the
+ * Claude session (because the system prompt is baked in at creation
+ * time); memory changes inject a user-prefix note on the next turn
+ * to preserve conversation history.
+ */
+export const settingsBus = new EventEmitter();
+settingsBus.setMaxListeners(50);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..");
@@ -286,6 +298,53 @@ export class ClaudeSession {
     // The current turn's sink — push() appends parsed JSON events
     // and notifies any waiting consumer.
     this.turnSink = null;
+    // Flag set by the settings bus when memory.md has been edited
+    // since the last turn. The next send() prepends a bracketed
+    // "memory update" note to the user message so Claude picks up
+    // the change in-context without losing conversation history.
+    this.pendingMemoryNote = false;
+
+    // Wire up the settings event bus so this session reacts to
+    // persona / memory edits made via the HTTP API.
+    this.onPersonaChanged = () => this.resetSession();
+    this.onMemoryChanged = () => {
+      this.pendingMemoryNote = true;
+    };
+    settingsBus.on("persona-changed", this.onPersonaChanged);
+    settingsBus.on("memory-changed", this.onMemoryChanged);
+  }
+
+  /**
+   * Clean up event listeners. Called when the websocket closes so
+   * we don't leak subscriptions across reconnects.
+   */
+  dispose() {
+    settingsBus.off("persona-changed", this.onPersonaChanged);
+    settingsBus.off("memory-changed", this.onMemoryChanged);
+    this.cancel();
+  }
+
+  /**
+   * Start a completely fresh conversation. Kills the current
+   * subprocess, generates a new session id, and rebuilds the system
+   * prompt from the current persona.md / memory.md. The next send()
+   * will cold-spawn with the new prompt.
+   *
+   * Used when persona.md changes mid-conversation: the old system
+   * prompt is frozen inside Claude's session log, so the only way
+   * to make a new persona take effect is to start over.
+   */
+  resetSession() {
+    try {
+      if (this.child && !this.child.killed) this.child.kill("SIGTERM");
+    } catch {}
+    this.child = null;
+    this.sessionId = randomUUID();
+    this.isResumed = false;
+    this.spawnCount = 0;
+    this.systemPrompt = buildSystemPrompt();
+    this.pendingMemoryNote = false;
+    persistSessionId(this.sessionId);
   }
 
   /**
@@ -383,6 +442,18 @@ export class ClaudeSession {
    */
   async *send(userText) {
     this.cancelled = false;
+
+    // If memory changed since the last turn, inject a bracketed
+    // note so Claude picks up the new facts in-context. Keeps
+    // conversation history intact (no session reset needed for
+    // memory-only edits). Claude's system prompt tells her to
+    // treat bracketed prefixes as context, not narration.
+    if (this.pendingMemoryNote) {
+      const mem = readMemory();
+      userText = `[Long-term memory was just updated. The current memory is:\n${mem || "(empty)"}\nAcknowledge naturally if relevant, but don't narrate this update.]\n${userText}`;
+      this.pendingMemoryNote = false;
+    }
+
     this.#ensureChild();
 
     // Sink: a bounded queue of parsed JSON events from stdout. The

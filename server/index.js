@@ -24,6 +24,7 @@ import fastifyWebsocket from "@fastify/websocket";
 
 import {
   ClaudeSession,
+  settingsBus,
   readPersona,
   writePersona,
   readMemory,
@@ -225,7 +226,12 @@ app.post("/api/persona", async (req, reply) => {
   const content = typeof req.body?.content === "string" ? req.body.content : "";
   try {
     writePersona(content);
-    return { ok: true, persona: readPersona() };
+    // Persona is baked into Claude's session prompt at creation,
+    // so changing it forces a session reset on every active
+    // connection. The bus listener in ClaudeSession handles that
+    // by regenerating its session id and rebuilding the prompt.
+    settingsBus.emit("persona-changed");
+    return { ok: true, persona: readPersona(), reset: true };
   } catch (err) {
     reply.code(500);
     return { error: err.message };
@@ -236,6 +242,9 @@ app.post("/api/memory", async (req, reply) => {
   const content = typeof req.body?.content === "string" ? req.body.content : "";
   try {
     writeMemory(content);
+    // Memory updates are injected as an in-turn prefix next time
+    // the user speaks, so history is preserved. No session reset.
+    settingsBus.emit("memory-changed");
     return { ok: true, memory: readMemory() };
   } catch (err) {
     reply.code(500);
@@ -246,6 +255,9 @@ app.post("/api/memory", async (req, reply) => {
 app.post("/api/session/reset", async () => {
   const id = randomUUID();
   writeSessionId(id);
+  // Reset every active session so the new id takes effect
+  // immediately rather than on the next server restart.
+  settingsBus.emit("persona-changed");
   return { ok: true, sessionId: id };
 });
 
@@ -454,6 +466,9 @@ app.get("/ws", { websocket: true }, (socket, req) => {
 
   socket.on("close", () => {
     app.log.info({ sessionId: session.sessionId }, "client disconnected");
+    // Release the settings bus subscription so we don't leak
+    // listeners across reconnects.
+    session.dispose();
   });
 });
 
