@@ -73,6 +73,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
    * blobs in order, so iris starts speaking before Claude finishes writing.
    */
   const streamAssistantTurn = async (userText) => {
+    app.log.info({ prompt: userText.slice(0, 200) }, "→ claude");
     let buffer = "";
     let full = "";
 

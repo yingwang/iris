@@ -15,15 +15,19 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Voice defaults per language. Users can install more via System Settings
-// → Accessibility → Spoken Content → System Voice → Manage Voices.
+// Voice defaults per language. English uses Daniel (British male) to match
+// the male Mark avatar. For Chinese macOS ships Tingting (female) by
+// default and no male voice is installed out of the box — the user can
+// download a male zh_CN voice from System Settings → Accessibility →
+// Spoken Content → System Voice → Manage Voices (e.g. "Linghui Premium"
+// if available) and set IRIS_VOICE_ZH to it.
 const VOICE_BY_LANG = {
-  zh: "Tingting",
-  "zh-cn": "Tingting",
-  "zh-tw": "Meijia",
-  en: "Samantha",
-  "en-us": "Samantha",
-  "en-gb": "Daniel",
+  zh: process.env.IRIS_VOICE_ZH || "Tingting",
+  "zh-cn": process.env.IRIS_VOICE_ZH || "Tingting",
+  "zh-tw": process.env.IRIS_VOICE_ZH || "Meijia",
+  en: process.env.IRIS_VOICE_EN || "Daniel",
+  "en-us": process.env.IRIS_VOICE_EN || "Daniel",
+  "en-gb": process.env.IRIS_VOICE_EN || "Daniel",
   ja: "Kyoko",
   ko: "Yuna",
 };

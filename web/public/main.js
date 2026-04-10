@@ -118,34 +118,18 @@ async function enqueueTtsAudio(base64) {
   if (!playing) pumpPlayQueue();
 }
 
-let lipSyncAnalyser = null;
-let lipSyncRAF = null;
-
-function startLipSyncLoop() {
-  if (lipSyncRAF || !lipSyncAnalyser || !avatarStage) return;
-  const data = new Uint8Array(lipSyncAnalyser.fftSize);
-  const loop = () => {
-    if (!lipSyncAnalyser || !playing) {
-      avatarStage?.setMouthOpen(0);
-      lipSyncRAF = null;
-      return;
-    }
-    lipSyncAnalyser.getByteTimeDomainData(data);
-    // RMS of the 0..255 time-domain samples, centered at 128.
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) {
-      const v = (data[i] - 128) / 128;
-      sum += v * v;
-    }
-    const rms = Math.sqrt(sum / data.length);
-    // Scale RMS to mouth open range — empirically 0..0.3 is the
-    // interesting part for `say` voices.
-    const mouth = Math.min(1, rms * 3.5);
-    avatarStage.setMouthOpen(mouth);
-    lipSyncRAF = requestAnimationFrame(loop);
-  };
-  lipSyncRAF = requestAnimationFrame(loop);
-}
+// Also let main.js update the avatar expression based on the user's
+// face — not just the mouth corners, but a named expression trigger
+// when the user's mood changes noticeably.
+let lastExpressionLabel = "neutral";
+setInterval(() => {
+  if (!faceTracker || !avatarStage?.ready) return;
+  const snap = faceTracker.snapshot();
+  if (snap.label !== lastExpressionLabel) {
+    lastExpressionLabel = snap.label;
+    avatarStage.setExpression(snap.label);
+  }
+}, 300);
 
 async function pumpPlayQueue() {
   if (playing) return;
@@ -153,38 +137,47 @@ async function pumpPlayQueue() {
   ttsSpeaking = true;
   // Mute mic while iris is talking so she doesn't hear herself.
   if (vadRecorder) vadRecorder.pause();
-  const ctx = ensureAudioCtx();
-  if (ctx.state === "suspended") {
-    try { await ctx.resume(); } catch {}
-  }
-  if (!lipSyncAnalyser) {
-    lipSyncAnalyser = ctx.createAnalyser();
-    lipSyncAnalyser.fftSize = 1024;
-  }
-  startLipSyncLoop();
+
   while (playQueue.length > 0) {
     const ab = playQueue.shift();
+    const blob = new Blob([ab], { type: "audio/wav" });
     try {
-      const buffer = await ctx.decodeAudioData(ab.slice(0));
-      await new Promise((resolve) => {
-        const src = ctx.createBufferSource();
-        src.buffer = buffer;
-        src.connect(lipSyncAnalyser);
-        lipSyncAnalyser.connect(ctx.destination);
-        src.onended = resolve;
-        src.start();
-      });
+      // Prefer Live2D's built-in speak(): it plays audio AND drives
+      // the mouth at the Cubism engine level, which plays nicer with
+      // the motion manager than overwriting ParamMouthOpenY from an
+      // outside ticker.
+      if (avatarStage?.ready) {
+        await avatarStage.speak(blob);
+      } else {
+        await playBlobViaWebAudio(blob);
+      }
     } catch (err) {
-      console.warn("tts decode/play failed:", err);
+      console.warn("tts playback failed:", err);
     }
   }
+
   playing = false;
   ttsSpeaking = false;
-  avatarStage?.setMouthOpen(0);
   // Give speakers a beat to settle, then unmute.
   setTimeout(() => {
     if (vadRecorder) vadRecorder.resume();
   }, 300);
+}
+
+async function playBlobViaWebAudio(blob) {
+  const ctx = ensureAudioCtx();
+  if (ctx.state === "suspended") {
+    try { await ctx.resume(); } catch {}
+  }
+  const ab = await blob.arrayBuffer();
+  const buffer = await ctx.decodeAudioData(ab);
+  await new Promise((resolve) => {
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.onended = resolve;
+    src.start();
+  });
 }
 
 function appendBubble(role, text) {

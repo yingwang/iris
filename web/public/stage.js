@@ -13,8 +13,12 @@
  * MODEL_URL at /models/your-model/your-model.model3.json.
  */
 
+// Mark — the male business-attire sample from Live2D's official Cubism
+// Web samples. He has an idle motion group and the standard parameter
+// ids (ParamMouthOpenY, ParamMouthForm, eye/brow params) so all the
+// wiring below Just Works without a per-model mapping.
 const MODEL_URL =
-  "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json";
+  "https://cdn.jsdelivr.net/gh/Live2D/CubismWebSamples/Samples/Resources/Mark/Mark.model3.json";
 
 export class AvatarStage {
   constructor(canvasEl) {
@@ -113,6 +117,42 @@ export class AvatarStage {
   /** Drive mouth from TTS amplitude. Called by main.js audio analyser. */
   setMouthOpen(v) {
     this.externalMouth = clamp01(v);
+  }
+
+  /**
+   * Play a WAV blob through Live2D's built-in speak() so lip sync is
+   * synced with audio at the engine level (it bypasses our manual
+   * parameter write and uses an internal `sound`/`analyser` helper
+   * that plays nice with the motion manager).
+   *
+   * Returns a Promise that resolves when playback finishes.
+   */
+  speak(audioBlobOrUrl, { volume = 1 } = {}) {
+    if (!this.model || !this.model.speak) return Promise.resolve();
+    const url =
+      typeof audioBlobOrUrl === "string"
+        ? audioBlobOrUrl
+        : URL.createObjectURL(audioBlobOrUrl);
+    return new Promise((resolve) => {
+      try {
+        this.model.speak(url, {
+          volume,
+          crossOrigin: "anonymous",
+          onFinish: () => {
+            if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+            resolve();
+          },
+          onError: (err) => {
+            console.warn("Live2D speak error:", err);
+            if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+            resolve();
+          },
+        });
+      } catch (err) {
+        console.warn("speak() threw:", err);
+        resolve();
+      }
+    });
   }
 
   /** 0 = neutral, 1 = big smile. */
