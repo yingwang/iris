@@ -6,81 +6,109 @@ A voice + video AI companion. Claude as the brain, Live2D as the face, real-time
 
 ```
 ┌─────────────── browser ───────────────┐         ┌──────── server ────────┐
-│ PIXI + pixi-live2d (Haru Live2D)      │         │ Fastify + WebSocket    │
-│ MediaPipe Face Landmarker             │ ◄─ WS ─►│ Claude Code CLI child  │
-│ Silero VAD (continuous mic)           │         │ whisper.cpp (STT)      │
+│ PIXI + pixi-live2d (Haru / Mark)      │         │ Fastify + WebSocket    │
+│ MediaPipe Face Landmarker             │ ◄─ WS ─►│ Persistent Claude CLI  │
+│ Silero VAD (continuous mic)           │         │ whisper.cpp / Paraformer│
 │ Web Audio TTS playback + RMS lip sync │         │ edge-tts (TTS)         │
 └───────────────────────────────────────┘         └────────────────────────┘
 ```
 
-- **Brain**: Claude Code CLI (`claude -p … --output-format stream-json`) as a subprocess. Uses your existing Claude subscription — no API key needed.
-- **STT**: whisper.cpp (`ggml-tiny.bin` by default) running locally on CPU with Whisper language auto-detect, so English and Chinese both work with no toggle.
-- **TTS**: [edge-tts](https://github.com/rany2/edge-tts) — a Python CLI that talks to Microsoft Edge's neural voice backend. Free, no API key, needs internet. Defaults to `en-US-AvaNeural` / `zh-CN-XiaoxiaoNeural`.
-- **Voice activity**: Silero VAD via `@ricky0123/vad-web` runs the neural VAD in an AudioWorklet so you can just talk without pressing anything. VAD is automatically muted while iris is speaking to stop her from transcribing her own voice.
-- **Avatar**: Live2D Cubism 4 via `pixi-live2d-display`. Loads the Haru sample model from jsdelivr; Cubism Core is loaded from live2d.com (required). Claude can emit `<expr:happy>`, `<expr:surprised>`, `<expr:sad>`, etc. inline and the avatar's expression morphs accordingly.
-- **Tracking**: MediaPipe Face Landmarker produces a 52-blendshape snapshot every frame. The snapshot is sent with each user turn as a natural-language prefix (`[The user looks smiling, grinning broadly.]`) so Claude can react to your face.
-- **Lip sync**: Web Audio AnalyserNode reads RMS off the TTS stream and writes `ParamMouthOpenY` on the Live2D model, so iris's mouth moves in sync with what she's saying.
+- **Brain**: Claude Code CLI in persistent `--input-format stream-json` mode. One long-running subprocess per session handles every turn via stdin JSON, so only the first reply pays the cold-spawn tax. Defaults to `--model sonnet`; override with `IRIS_CLAUDE_MODEL=opus` for extra quality or `haiku` for extra speed. Uses your existing Claude subscription — no API key needed.
+- **STT**: two engines, the UI picks:
+  - **whisper.cpp** (`ggml-small-q5_1.bin`, ~181 MB, ~3 s per turn on CPU) — multilingual, handles English + Chinese + auto-detect with a strict en/zh script validator that retries on mis-IDs.
+  - **Paraformer-zh** via `sherpa-onnx-node` (~232 MB ONNX, ~300–500 ms per turn) — state of the art for Mandarin. Routed automatically when you pick 中文 in the language selector. In-process C++ native addon, no Python sidecar.
+- **TTS**: [edge-tts](https://github.com/rany2/edge-tts) — free, needs internet. Ships with both a female voice set (`en-US-AvaNeural` + `zh-CN-XiaoxiaoNeural`) and a male voice set (`en-US-AndrewNeural` + `zh-CN-YunxiNeural`). Speaking speed is user-configurable.
+- **Voice activity**: Silero VAD via `@ricky0123/vad-web` — a neural VAD running in an AudioWorklet so you just talk without pressing anything. VAD stays running during iris's replies so you can interrupt her mid-sentence; a 1 s grace window after the start of TTS playback ignores echo leak.
+- **Avatar**: Live2D Cubism 4 via `pixi-live2d-display`. Female persona uses the Haru sample; male uses Mark. Claude can emit `<expr:happy>`, `<expr:surprised>`, `<expr:sad>` etc. inline and the avatar's expression morphs. The avatar model URL can be overridden via `IRIS_AVATAR_FEMALE_URL` / `IRIS_AVATAR_MALE_URL` so you can drop in a custom 古风 Chinese character or anything else that ships as `.model3.json`.
+- **Tracking**: MediaPipe Face Landmarker produces a 52-blendshape snapshot every frame. The snapshot is sent with each user turn as a natural-language prefix (`[The user looks smiling, grinning broadly.]`) so Claude can react to your expression.
+- **Lip sync**: Web Audio AnalyserNode reads RMS off the TTS stream and writes `ParamMouthOpenY`, so the avatar's mouth moves in sync with what she's saying.
 
-## Roadmap
+## Personality & memory
 
-- [x] M1 — text chat: WebSocket → Claude Code CLI → streaming text back to browser
-- [x] M2 — webcam + MediaPipe Face Landmarker: live blendshape snapshot sent as prompt context
-- [x] M3 — voice in: Silero VAD continuous capture → whisper.cpp → text → Claude (no button)
-- [x] M4 — voice out: sentence-by-sentence macOS `say` → WAV → Web Audio playback
-- [x] M5 — Live2D avatar: Haru sample loads via pixi-live2d-display
-- [x] M6 — lip sync: AnalyserNode RMS on TTS stream → `ParamMouthOpenY`
-- [x] M7 — expression mirror: user's smile → avatar's `ParamMouthForm`
+iris has two user-editable text files at the project root, both loaded into every Claude turn:
 
-## Running today (M1 + M3)
+- **`persona.md`** — who iris is. Describe her voice, relationship to you, roleplay setting, anything that shouldn't change turn-to-turn. Edit freely; hardcoded output rules (no emoji / markdown / code blocks, because this is TTS) always stay on top.
+- **`memory.md`** — long-term facts iris knows about you. Iris can add here automatically by emitting `<remember>fact in one sentence</remember>` in the middle of a reply; you can also edit it directly.
+
+Both files are **gitignored**. The repo ships committed defaults at `persona.default.md` / `memory.default.md` which are used as fallbacks when the personal files are absent. Session history also persists across restarts via `.iris/session-id`, so conversations carry forward until you hit "new session" in the settings panel.
+
+### Settings panel
+
+Click the ⚙︎ settings button in the chat header to get a modal with:
+- Persona text area (save, restore default)
+- Memory text area (save, clear all)
+- Current session id + reset button
+
+The language, persona (female/male) and speaking speed selectors live in the compose bar and are persisted in `localStorage`.
+
+## Running
 
 Prereqs:
 - Node 20+
+- Python 3 with `pip install edge-tts`
 - `claude` CLI installed and logged in (`claude` works in your terminal)
 - Xcode Command Line Tools (for building whisper.cpp)
 - CMake
+- A modern browser with mic + webcam permissions
 
 ```bash
-# 1. Build whisper.cpp and download the base model (~142 MB)
+# 1. Build whisper.cpp and download the default model (~181 MB small-q5_1)
 ./scripts/install-whisper.sh
 
-# 2. Install node deps
+# 2. (optional, recommended) Download Paraformer-zh for faster / more accurate Chinese
+./scripts/install-paraformer.sh
+
+# 3. Install node deps
 npm install
 
-# 3. Start the server
+# 4. Start the server
 npm run dev
 # open http://localhost:3000
 ```
 
-Text: type in the chat box — the server spawns `claude -p` with a streaming
-session, forwards text back over the WebSocket. Same session id across turns
-so conversation context is preserved.
+First reply is ~4 s (cold Claude subprocess + model warm-up). Every reply after that lands ~1 s to first audio chunk.
 
-Voice: hold the mic button or the Space key (when the text input isn't
-focused). The browser records audio, resamples to 16 kHz mono, wraps it in
-a WAV header, and sends it over WebSocket as base64. The server pipes it
-to `whisper-cli` which prints the transcription, and the transcription
-feeds Claude like any other message.
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `IRIS_CLAUDE_MODEL` | `sonnet` | Claude model alias — `sonnet`, `opus`, `haiku` |
+| `IRIS_WHISPER_MODEL` | `ggml-small-q5_1.bin` | Default whisper model |
+| `IRIS_WHISPER_MODEL_EN` / `_ZH` | `$IRIS_WHISPER_MODEL` | Per-language whisper override |
+| `IRIS_PARAFORMER_MODEL` | `models/paraformer-zh/model.int8.onnx` | Paraformer ONNX path |
+| `IRIS_VOICE_EN` / `IRIS_VOICE_ZH` | `AvaNeural` / `XiaoxiaoNeural` | Female edge-tts voices |
+| `IRIS_VOICE_EN_M` / `IRIS_VOICE_ZH_M` | `AndrewNeural` / `YunxiNeural` | Male edge-tts voices |
+| `IRIS_TTS_RATE` | `20` | Default speaking speed offset (−50..+50) |
+| `IRIS_AVATAR_FEMALE_URL` | Haru CDN | Custom female Live2D `.model3.json` URL |
+| `IRIS_AVATAR_MALE_URL` | Mark CDN | Custom male Live2D `.model3.json` URL |
 
 ### Note on Metal / Apple Silicon
 
-`install-whisper.sh` disables the Metal backend (`-DGGML_METAL=OFF`) because
-Metal produced garbled output on Intel Macs. If you're on Apple Silicon,
-remove that flag from the script to get GPU acceleration — it'll be much
-faster.
+`install-whisper.sh` disables the Metal backend (`-DGGML_METAL=OFF`) because Metal produced garbled output on Intel Macs. If you're on Apple Silicon, remove that flag from the script to get GPU acceleration — it'll be much faster.
 
 ## Layout
 
 ```
 iris/
 ├── server/
-│   ├── index.js         Fastify + WebSocket entry
-│   └── claude.js        Claude CLI subprocess wrapper
+│   ├── index.js         Fastify + WebSocket entry, /api settings endpoints
+│   ├── claude.js        Persistent Claude CLI subprocess + persona/memory
+│   ├── stt.js           Whisper/Paraformer dispatcher
+│   ├── whisper.js       whisper.cpp wrapper with script-validated retry
+│   ├── paraformer.js    sherpa-onnx Paraformer-zh wrapper
+│   └── tts.js           edge-tts wrapper with per-call rate / gender
 ├── web/public/
-│   ├── index.html       Chat + stage markup
+│   ├── index.html       Chat + stage markup, settings modal
 │   ├── style.css
-│   └── main.js          Browser client (WebSocket, webcam)
-├── models/              Live2D models go here (later)
-├── scripts/             Setup scripts for Whisper/Piper binaries (later)
+│   ├── main.js          Browser client (WebSocket, webcam, settings)
+│   ├── stage.js         Live2D avatar with live persona swap
+│   ├── vad.js           Silero VAD wrapper
+│   └── face.js          MediaPipe Face Landmarker wrapper
+├── persona.default.md   Committed default persona (user editable via UI)
+├── memory.default.md    Committed default memory fallback
+├── persona.md           Personal persona (gitignored)
+├── memory.md            Personal long-term memory (gitignored)
+├── models/              Whisper + Paraformer model files (gitignored)
+├── scripts/             install-whisper.sh, install-paraformer.sh
 └── package.json
 ```
-

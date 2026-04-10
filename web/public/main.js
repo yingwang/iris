@@ -19,13 +19,22 @@ const form = document.getElementById("compose");
 const input = document.getElementById("input");
 const micBtn = document.getElementById("mic");
 const langSel = document.getElementById("lang");
+const personaSel = document.getElementById("persona");
+const rateSel = document.getElementById("rate");
 const selfView = document.getElementById("self-view");
 const avatarCanvas = document.getElementById("avatar");
 const faceDebugEl = document.getElementById("face-debug");
 
-// Restore the user's preferred STT language from localStorage so the
-// choice persists across reloads. Values: "auto" | "en" | "zh".
+// --- persisted dropdown preferences ----------------------------------
+//
+// STT language, companion persona (her / him), and speaking speed all
+// live in localStorage so the choice survives reloads. The values get
+// pushed to the server on connect and any time they change.
+
 const LANG_STORAGE_KEY = "iris.sttLanguage";
+const PERSONA_STORAGE_KEY = "iris.persona";
+const RATE_STORAGE_KEY = "iris.ttsRate";
+
 const savedLang = localStorage.getItem(LANG_STORAGE_KEY);
 if (savedLang && ["auto", "en", "zh"].includes(savedLang)) {
   langSel.value = savedLang;
@@ -33,6 +42,35 @@ if (savedLang && ["auto", "en", "zh"].includes(savedLang)) {
 langSel.addEventListener("change", () => {
   localStorage.setItem(LANG_STORAGE_KEY, langSel.value);
 });
+
+const savedPersona = localStorage.getItem(PERSONA_STORAGE_KEY);
+if (savedPersona && ["female", "male"].includes(savedPersona)) {
+  personaSel.value = savedPersona;
+}
+personaSel.addEventListener("change", () => {
+  localStorage.setItem(PERSONA_STORAGE_KEY, personaSel.value);
+  pushConfig();
+  // Swap Live2D model in place — no page reload.
+  avatarStage?.setPersona(personaSel.value);
+});
+
+const savedRate = localStorage.getItem(RATE_STORAGE_KEY);
+if (savedRate != null) rateSel.value = savedRate;
+rateSel.addEventListener("change", () => {
+  localStorage.setItem(RATE_STORAGE_KEY, rateSel.value);
+  pushConfig();
+});
+
+function pushConfig() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(
+    JSON.stringify({
+      type: "config",
+      gender: personaSel.value,
+      rate: Number(rateSel.value),
+    })
+  );
+}
 
 // --- WebSocket ----------------------------------------------------------
 
@@ -45,6 +83,9 @@ function connect() {
 
   ws.addEventListener("open", () => {
     statusEl.textContent = "connected · ready";
+    // Push current voice prefs so the server uses them from the
+    // very first turn instead of the defaults.
+    pushConfig();
   });
 
   ws.addEventListener("close", () => {
@@ -239,6 +280,95 @@ function sendText(text) {
   ws.send(JSON.stringify({ type: "user_text", text, expression }));
 }
 
+// --- settings modal ----------------------------------------------------
+
+const settingsModal = document.getElementById("settings-modal");
+const settingsStatus = document.getElementById("settings-status");
+const personaText = document.getElementById("persona-text");
+const memoryText = document.getElementById("memory-text");
+const sessionIdView = document.getElementById("session-id-view");
+
+function setSettingsStatus(text, kind = "") {
+  settingsStatus.textContent = text;
+  settingsStatus.className = kind;
+  if (text) setTimeout(() => {
+    if (settingsStatus.textContent === text) {
+      settingsStatus.textContent = "";
+      settingsStatus.className = "";
+    }
+  }, 3000);
+}
+
+async function openSettings() {
+  settingsModal.hidden = false;
+  settingsStatus.textContent = "loading…";
+  try {
+    const r = await fetch("/api/config");
+    if (!r.ok) throw new Error(`config ${r.status}`);
+    const data = await r.json();
+    personaText.value = data.persona || "";
+    memoryText.value = data.memory || "";
+    sessionIdView.textContent = data.sessionId || "—";
+    setSettingsStatus("");
+  } catch (err) {
+    setSettingsStatus(`failed to load: ${err.message}`, "err");
+  }
+}
+
+function closeSettings() {
+  settingsModal.hidden = true;
+}
+
+document.getElementById("settings-btn").addEventListener("click", openSettings);
+document.getElementById("settings-close").addEventListener("click", closeSettings);
+document.querySelector(".settings-backdrop").addEventListener("click", closeSettings);
+
+async function saveField(kind, value) {
+  setSettingsStatus("saving…");
+  try {
+    const r = await fetch(`/api/${kind}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: value }),
+    });
+    if (!r.ok) throw new Error(`${kind} ${r.status}`);
+    setSettingsStatus(`${kind} saved`, "ok");
+  } catch (err) {
+    setSettingsStatus(`save failed: ${err.message}`, "err");
+  }
+}
+
+document.getElementById("persona-save").addEventListener("click", () => {
+  saveField("persona", personaText.value);
+});
+document.getElementById("memory-save").addEventListener("click", () => {
+  saveField("memory", memoryText.value);
+});
+
+document.getElementById("persona-reset").addEventListener("click", async () => {
+  if (!confirm("Restore the default persona? Your current persona will be lost.")) return;
+  await saveField("persona", ""); // empty -> server falls back to default
+  await openSettings(); // reload to show the default content
+});
+document.getElementById("memory-clear").addEventListener("click", async () => {
+  if (!confirm("Clear all memory? Iris will forget everything stored in memory.md.")) return;
+  await saveField("memory", "");
+  memoryText.value = "";
+});
+document.getElementById("session-reset").addEventListener("click", async () => {
+  if (!confirm("Start a fresh conversation? The old session is kept on disk but Iris won't see it.")) return;
+  setSettingsStatus("resetting…");
+  try {
+    const r = await fetch("/api/session/reset", { method: "POST" });
+    if (!r.ok) throw new Error(`session ${r.status}`);
+    const data = await r.json();
+    sessionIdView.textContent = data.sessionId;
+    setSettingsStatus("new session started", "ok");
+  } catch (err) {
+    setSettingsStatus(`reset failed: ${err.message}`, "err");
+  }
+});
+
 async function sendAudio(wavBlob) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   if (!wavBlob || wavBlob.size < 200) {
@@ -412,7 +542,25 @@ async function initFace() {
 
 async function initAvatar() {
   try {
-    avatarStage = new AvatarStage(avatarCanvas);
+    // Fetch any custom avatar URL overrides from the server before
+    // constructing the stage, so a configured IRIS_AVATAR_MALE_URL
+    // (for example a 古风 Chinese model) is used from first paint
+    // instead of only after a persona swap.
+    let overrides = {};
+    try {
+      const r = await fetch("/api/config");
+      if (r.ok) {
+        const data = await r.json();
+        overrides = {
+          female: data.avatarFemaleUrl || undefined,
+          male: data.avatarMaleUrl || undefined,
+        };
+      }
+    } catch {}
+    avatarStage = new AvatarStage(avatarCanvas, {
+      persona: personaSel.value,
+      modelOverrides: overrides,
+    });
     await avatarStage.init();
     statusEl.textContent = "avatar ready · click anywhere to start";
   } catch (err) {

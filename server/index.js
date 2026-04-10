@@ -16,12 +16,22 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import fastifyWebsocket from "@fastify/websocket";
 
-import { ClaudeSession } from "./claude.js";
+import {
+  ClaudeSession,
+  readPersona,
+  writePersona,
+  readMemory,
+  writeMemory,
+  appendMemory,
+  readSessionId,
+  writeSessionId,
+} from "./claude.js";
 import { transcribe, whisperAvailable, paraformerAvailable } from "./stt.js";
 import { synthesize, guessLanguage } from "./tts.js";
 
@@ -50,6 +60,27 @@ function stripForSpeech(text) {
     // Collapse whitespace runs introduced by stripping.
     .replace(/\s{2,}/g, " ")
     .trim();
+}
+
+/**
+ * Strip and collect <remember>…</remember> blocks from a text
+ * fragment. Returns { text, facts } where `text` has the blocks
+ * removed and `facts` is the list of saved-fact strings. Handles
+ * multiple blocks per chunk but not split tags — the caller
+ * (createExpressionStream) is already buffering incomplete `<…`
+ * tails so by the time we run, tags are either whole or absent.
+ */
+function extractRememberBlocks(text) {
+  const facts = [];
+  const stripped = text.replace(
+    /<remember>([\s\S]*?)<\/remember>/gi,
+    (_m, inner) => {
+      const fact = inner.trim();
+      if (fact) facts.push(fact);
+      return "";
+    }
+  );
+  return { text: stripped, facts };
 }
 
 /**
@@ -166,9 +197,68 @@ await app.register(fastifyStatic, {
   prefix: "/",
 });
 
+// --- settings API ------------------------------------------------------
+//
+// Read/write endpoints for the browser settings panel. All three files
+// live at the project root and are user-editable:
+//
+//   /api/config           GET — returns {persona, memory, sessionId}
+//   /api/persona          POST {content} — overwrite persona.md (empty clears)
+//   /api/memory           POST {content} — overwrite memory.md (empty clears)
+//   /api/session/reset    POST — generate a new session id, forgetting history
+
+app.get("/api/config", async () => {
+  return {
+    persona: readPersona(),
+    memory: readMemory(),
+    sessionId: readSessionId(),
+    // Avatar model URLs, overridable via env so the user can drop
+    // in a custom Cubism 4 model (for example a 古风 Chinese
+    // character from a community marketplace) without touching any
+    // code. Empty string means "use the client's built-in default".
+    avatarFemaleUrl: process.env.IRIS_AVATAR_FEMALE_URL || "",
+    avatarMaleUrl: process.env.IRIS_AVATAR_MALE_URL || "",
+  };
+});
+
+app.post("/api/persona", async (req, reply) => {
+  const content = typeof req.body?.content === "string" ? req.body.content : "";
+  try {
+    writePersona(content);
+    return { ok: true, persona: readPersona() };
+  } catch (err) {
+    reply.code(500);
+    return { error: err.message };
+  }
+});
+
+app.post("/api/memory", async (req, reply) => {
+  const content = typeof req.body?.content === "string" ? req.body.content : "";
+  try {
+    writeMemory(content);
+    return { ok: true, memory: readMemory() };
+  } catch (err) {
+    reply.code(500);
+    return { error: err.message };
+  }
+});
+
+app.post("/api/session/reset", async () => {
+  const id = randomUUID();
+  writeSessionId(id);
+  return { ok: true, sessionId: id };
+});
+
 app.get("/ws", { websocket: true }, (socket, req) => {
   const session = new ClaudeSession();
   app.log.info({ sessionId: session.sessionId }, "client connected");
+
+  // Per-connection voice preferences. Sent by the client either on
+  // connect (future: a config message) or alongside each user turn.
+  // gender switches between the female "Iris" voice set and the male
+  // companion voice set; rate is the edge-tts speed offset in
+  // percent (-50..+50).
+  const voicePrefs = { gender: "female", rate: null };
 
   const send = (obj) => socket.send(JSON.stringify(obj));
 
@@ -231,7 +321,11 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       const speakable = stripForSpeech(piece);
       if (!speakable) return;
       try {
-        const wav = await synthesize(speakable, { language: guessLanguage(speakable) });
+        const wav = await synthesize(speakable, {
+          language: guessLanguage(speakable),
+          gender: voicePrefs.gender,
+          ...(voicePrefs.rate != null ? { rate: voicePrefs.rate } : {}),
+        });
         if (isInterrupted()) return; // user started talking while TTS was synthesizing
         if (wav.length > 0) {
           send({ type: "tts_audio", data: wav.toString("base64") });
@@ -247,8 +341,23 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       // strips <expr:...> tags, hides <expr:thinking> reasoning
       // blocks, and tells us which mood cues to forward. Only the
       // returned `text` ever reaches the chat bubble or TTS.
-      const { text: cleaned, cues } = exprStream.push(chunk);
+      const { text: exprCleaned, cues } = exprStream.push(chunk);
       for (const name of cues) send({ type: "avatar_expression", name });
+      // Then peel off any <remember>…</remember> facts before
+      // anything reaches the bubble or the TTS. Each fact is
+      // appended to memory.md and forwarded to the client as a
+      // lightweight "memory_saved" notification so the UI can
+      // surface it.
+      const { text: cleaned, facts } = extractRememberBlocks(exprCleaned);
+      for (const fact of facts) {
+        try {
+          appendMemory(fact);
+          send({ type: "memory_saved", text: fact });
+          app.log.info({ fact }, "memory saved");
+        } catch (err) {
+          app.log.warn({ err: err.message }, "failed to save memory");
+        }
+      }
       if (cleaned) {
         send({ type: "assistant_chunk", text: cleaned });
         full += cleaned;
@@ -290,6 +399,20 @@ app.get("/ws", { websocket: true }, (socket, req) => {
 
     if (msg.type === "interrupt") {
       interruptCurrent();
+      return;
+    }
+
+    // Lightweight config updates — the client pings this whenever
+    // the user changes a dropdown. Survives for the lifetime of the
+    // websocket connection.
+    if (msg.type === "config") {
+      if (msg.gender === "male" || msg.gender === "female") {
+        voicePrefs.gender = msg.gender;
+      }
+      if (typeof msg.rate === "number") {
+        voicePrefs.rate = Math.max(-50, Math.min(50, Math.round(msg.rate)));
+      }
+      app.log.info({ voicePrefs }, "config updated");
       return;
     }
 

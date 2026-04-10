@@ -25,13 +25,44 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const DEFAULT_SYSTEM_PROMPT = `You are Iris, a warm, witty companion on a LIVE VIDEO CALL with the
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, "..");
+// Personal persona / memory — gitignored, written by the user or by
+// the settings UI. Loaded first, falling back to the committed
+// defaults below if they don't exist.
+const PERSONA_PATH = join(REPO_ROOT, "persona.md");
+const MEMORY_PATH = join(REPO_ROOT, "memory.md");
+// Repo defaults — committed to git, used as a fallback so a fresh
+// clone has something sensible and you can restore defaults via the
+// settings UI.
+const PERSONA_DEFAULT_PATH = join(REPO_ROOT, "persona.default.md");
+const MEMORY_DEFAULT_PATH = join(REPO_ROOT, "memory.default.md");
+const SESSION_DIR = join(REPO_ROOT, ".iris");
+const SESSION_ID_PATH = join(SESSION_DIR, "session-id");
+
+/**
+ * Default persona block — used when persona.md doesn't exist. This
+ * is the "who iris is" description, separate from the hardcoded
+ * output rules below. Override by dropping your own persona.md at
+ * the project root.
+ */
+const DEFAULT_PERSONA = `You are Iris, a warm, witty companion on a LIVE VIDEO CALL with the
 user. You appear as a friendly Live2D avatar and everything you say is read out loud by a
 text-to-speech voice the instant it's generated. This is a spoken conversation, not a chat window
 and not a terminal — treat it as if you are actually on a video call talking to a friend.
 
-OUTPUT RULES — these are absolute, because your text becomes speech:
+`;
+
+/**
+ * Hardcoded output/format rules — these are NEVER overridable by
+ * persona.md because they're what makes TTS output sound right and
+ * keep iris's voice from reading code or emoji aloud.
+ */
+const RULES = `OUTPUT RULES — these are absolute, because your text becomes speech:
 - Reply in short, natural spoken turns. 1 to 3 sentences usually, occasionally a little longer
   when the user asks for something substantive. Never write a whole essay.
 - NEVER use markdown of any kind. No bold, no italics, no headers, no block quotes.
@@ -88,6 +119,146 @@ STRICT TAG RULES:
   bracketed internal monologue, no "[thinking: ...]". Just answer directly as if speaking
   to the user. Your output is going straight to a TTS voice on a live call.`;
 
+/**
+ * Read a file's trimmed contents, returning null if it's missing or
+ * unreadable. Used as a building block by the persona/memory loaders.
+ */
+function readIfExists(path) {
+  try {
+    if (existsSync(path)) {
+      const content = readFileSync(path, "utf8").trim();
+      if (content) return content;
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Load the active persona: user's personal persona.md if present,
+ * else the committed repo default, else the hardcoded DEFAULT_PERSONA.
+ * Reading synchronously at prompt-build time is fine — it's a few KB
+ * read per turn and iris's whole path is already disk-bound on STT.
+ */
+export function readPersona() {
+  return (
+    readIfExists(PERSONA_PATH) ||
+    readIfExists(PERSONA_DEFAULT_PATH) ||
+    DEFAULT_PERSONA
+  );
+}
+
+/** Write the user's personal persona.md. Empty content deletes it. */
+export function writePersona(content) {
+  if (!content || !content.trim()) {
+    try {
+      if (existsSync(PERSONA_PATH)) {
+        writeFileSync(PERSONA_PATH, "", "utf8");
+      }
+    } catch {}
+    return;
+  }
+  writeFileSync(PERSONA_PATH, content.trim() + "\n", "utf8");
+}
+
+/**
+ * Load the active long-term memory: personal memory.md first, then
+ * the committed default. Empty content is fine — we just don't emit
+ * a memory block in that case.
+ */
+export function readMemory() {
+  return (
+    readIfExists(MEMORY_PATH) ||
+    readIfExists(MEMORY_DEFAULT_PATH) ||
+    ""
+  );
+}
+
+/** Write the user's personal memory.md. Empty content clears it. */
+export function writeMemory(content) {
+  writeFileSync(MEMORY_PATH, (content || "").trim() + (content ? "\n" : ""), "utf8");
+}
+
+/**
+ * Append a single fact to memory.md, preserving the existing content.
+ * Called when iris emits a <remember>…</remember> cue mid-reply so
+ * she can save long-term facts about the user without a round trip
+ * through the settings UI.
+ */
+export function appendMemory(fact) {
+  const clean = (fact || "").trim();
+  if (!clean) return;
+  const existing = readIfExists(MEMORY_PATH) || "";
+  const next = existing ? `${existing}\n- ${clean}` : `- ${clean}`;
+  writeFileSync(MEMORY_PATH, next + "\n", "utf8");
+}
+
+/** Expose the session id helpers for the settings API. */
+export function readSessionId() {
+  return loadPersistedSessionId();
+}
+export function writeSessionId(id) {
+  persistSessionId(id);
+}
+
+/**
+ * Wrap the raw memory content in a clearly-labeled block so Claude
+ * treats it as long-term facts rather than immediate input. Returns
+ * an empty string when the memory is empty — no block means no
+ * block-header noise in the prompt.
+ */
+function buildMemoryBlock() {
+  const mem = readMemory();
+  if (!mem) return "";
+  return `
+
+LONG-TERM MEMORY — these are things you know about the user from previous conversations.
+They were saved here deliberately; treat them as background context, not something to
+announce or repeat back. Refer to them naturally when relevant.
+
+You can save new facts to this memory by emitting <remember>the fact in one sentence</remember>
+in the middle of a reply. The tag is stripped from what the user hears, and the fact is
+appended to long-term memory on disk. Use it sparingly — only save things the user has
+actually told you about themselves that you'd want to recall next time. Do NOT save the
+content of the current turn's chitchat or ephemeral task state.
+
+${mem}`;
+}
+
+/** Compose the final system prompt from persona + rules + memory. */
+function buildSystemPrompt() {
+  return `${readPersona()}
+
+${RULES}${buildMemoryBlock()}`;
+}
+
+/**
+ * Read the persistent session id from .iris/session-id, if it exists
+ * and looks like a UUID. Returns null on any problem so the caller
+ * falls back to a fresh uuid.
+ */
+function loadPersistedSessionId() {
+  try {
+    if (!existsSync(SESSION_ID_PATH)) return null;
+    const id = readFileSync(SESSION_ID_PATH, "utf8").trim();
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return id;
+    }
+  } catch {}
+  return null;
+}
+
+function persistSessionId(id) {
+  try {
+    if (!existsSync(SESSION_DIR)) mkdirSync(SESSION_DIR, { recursive: true });
+    writeFileSync(SESSION_ID_PATH, id + "\n", "utf8");
+  } catch (err) {
+    // Non-fatal: session continuity is a nice-to-have, not a
+    // requirement. If the filesystem is read-only we just lose
+    // memory across restarts.
+    console.warn("failed to persist session id:", err.message);
+  }
+}
+
 // Default to Sonnet — noticeably faster than Opus for the same chat
 // workload, still plenty smart for short conversational turns. Override
 // via IRIS_CLAUDE_MODEL if you want Opus quality or Haiku speed.
@@ -95,8 +266,14 @@ const DEFAULT_MODEL = process.env.IRIS_CLAUDE_MODEL || "sonnet";
 
 export class ClaudeSession {
   constructor({ sessionId, systemPrompt, model } = {}) {
-    this.sessionId = sessionId ?? randomUUID();
-    this.systemPrompt = systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+    // Session id priority: caller override > persisted on disk > fresh
+    // uuid. Persisting across restarts means iris "remembers" the
+    // conversation — Claude Code's --resume replays full history.
+    const persisted = loadPersistedSessionId();
+    this.sessionId = sessionId ?? persisted ?? randomUUID();
+    this.isResumed = sessionId == null && persisted != null;
+    if (!persisted && !sessionId) persistSessionId(this.sessionId);
+    this.systemPrompt = systemPrompt ?? buildSystemPrompt();
     this.model = model ?? DEFAULT_MODEL;
     this.child = null;
     // Incremented every time we spawn a fresh subprocess. Used to
@@ -127,14 +304,16 @@ export class ClaudeSession {
       "--verbose",
       "--model", this.model,
     ];
-    if (this.spawnCount === 0) {
+    // First spawn uses --session-id (creates the session) unless we
+    // loaded one from disk, in which case we --resume it so Claude
+    // replays the history. Every subsequent respawn (after an
+    // interrupt) also uses --resume.
+    const shouldResume = this.spawnCount > 0 || this.isResumed;
+    if (shouldResume) {
+      args.push("--resume", this.sessionId);
+    } else {
       args.push("--session-id", this.sessionId);
       args.push("--append-system-prompt", this.systemPrompt);
-    } else {
-      // Respawn after an interrupt. --resume re-attaches to the
-      // session we created on turn 1; the system prompt was baked
-      // in then and is replayed automatically on resume.
-      args.push("--resume", this.sessionId);
     }
     this.spawnCount += 1;
 

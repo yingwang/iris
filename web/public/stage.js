@@ -13,17 +13,34 @@
  * MODEL_URL at /models/your-model/your-model.model3.json.
  */
 
-// Haru — female Cubism 4 sample from pixi-live2d-display's test assets.
-// Reverted from Mark after a test showed audio wasn't playing through
-// Mark via model.speak(). Haru was known-working in the earlier build.
-const MODEL_URL =
-  "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json";
+// Two Cubism 4 sample models from pixi-live2d-display's test assets,
+// used as the female / male companion avatars. Both work with the
+// ParamMouthOpenY lip-sync path we drive from the TTS analyser node.
+//
+// NOTE: earlier we ran into audio issues with Mark when we tried to
+// use Live2D's built-in `model.speak()` — it bypassed our analyser
+// pipeline. We dropped speak() entirely and now drive lip sync via
+// a WebAudio AnalyserNode instead, which works on both models.
+const MODELS = {
+  female:
+    "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json",
+  male:
+    "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/mark_free_t04/mark_free_t04.model3.json",
+};
 
 export class AvatarStage {
-  constructor(canvasEl) {
+  constructor(canvasEl, { persona = "female", modelOverrides = {} } = {}) {
     this.canvasEl = canvasEl;
     this.app = null;
     this.model = null;
+    this.persona = persona;
+    // Per-instance model URL map, starting from the built-in defaults
+    // and layered with any overrides from the server (for example a
+    // custom 古风 male model configured via IRIS_AVATAR_MALE_URL).
+    this.modelUrls = {
+      female: modelOverrides.female || MODELS.female,
+      male: modelOverrides.male || MODELS.male,
+    };
     this.ready = false;
     this.externalMouth = 0;
     this.externalSmile = 0;
@@ -45,8 +62,47 @@ export class AvatarStage {
       antialias: true,
     });
 
+    await this.#loadModel(this.persona);
+
+    // Fit to canvas, and re-fit whenever the stage element changes
+    // size — not just on window resize, because the grid cell can
+    // reflow for tab moves, devtools toggles, etc.
+    const parent = this.canvasEl.parentElement;
+    if ("ResizeObserver" in window && parent) {
+      this.resizeObserver = new ResizeObserver(() => this.fitModel());
+      this.resizeObserver.observe(parent);
+    } else {
+      window.addEventListener("resize", () => this.fitModel());
+    }
+
+    // Per-tick updates for expression + mouth drives.
+    this.app.ticker.add(() => this.tick());
+
+    this.ready = true;
+  }
+
+  /**
+   * Load the Live2D model for the given persona key into the stage,
+   * replacing whatever's currently there. Used both on first init and
+   * when the user switches the persona dropdown live.
+   */
+  async #loadModel(personaKey) {
+    const PIXI = window.PIXI;
+    const url = this.modelUrls[personaKey] || this.modelUrls.female;
+
+    // Tear down the previous model if present.
+    if (this.model) {
+      try {
+        this.app.stage.removeChild(this.model);
+        this.model.destroy();
+      } catch (err) {
+        console.warn("failed to destroy previous model:", err);
+      }
+      this.model = null;
+    }
+
     try {
-      this.model = await PIXI.live2d.Live2DModel.from(MODEL_URL);
+      this.model = await PIXI.live2d.Live2DModel.from(url);
     } catch (err) {
       console.error("Failed to load Live2D model:", err);
       throw err;
@@ -56,39 +112,32 @@ export class AvatarStage {
 
     // Cache the model's intrinsic size before we touch its scale.
     // pixi-live2d-display's .width / .height return the current
-    // rendered size (post-scale), so if we compute a new scale using
-    // those values we're chaining scales and the avatar snowballs
-    // every time the stage reflows. We capture the initial unscaled
-    // footprint once and always fit relative to that.
+    // rendered size (post-scale); we snapshot the unscaled footprint
+    // so repeated fits on reflow are idempotent.
     this.baseWidth = this.model.width;
     this.baseHeight = this.model.height;
-
-    // Fit to canvas, and re-fit whenever the stage element changes
-    // size — not just on window resize, because the grid cell can
-    // reflow for tab moves, devtools toggles, etc.
     this.fitModel();
-    const parent = this.canvasEl.parentElement;
-    if ("ResizeObserver" in window && parent) {
-      this.resizeObserver = new ResizeObserver(() => this.fitModel());
-      this.resizeObserver.observe(parent);
-    } else {
-      window.addEventListener("resize", () => this.fitModel());
-    }
 
-    // Let the avatar track the mouse/center so there's subtle head and
-    // eye movement even when idle.
-    this.model.focus(this.app.renderer.screen.width / 2, this.app.renderer.screen.height / 2);
+    // Let the avatar track the mouse/center so there's subtle head
+    // and eye movement even when idle.
+    this.model.focus(
+      this.app.renderer.screen.width / 2,
+      this.app.renderer.screen.height / 2
+    );
 
     // Kick off an idle motion. Cubism 4 models organise motions by
-    // group — Haru uses "Idle" as the default idle group. We loop
-    // through random Idle motions; pixi-live2d-display will auto-play
-    // breath and blink on top.
+    // group — both Haru and Mark use "Idle" as the default idle
+    // group. We loop through random Idle motions; pixi-live2d-display
+    // will auto-play breath and blink on top.
     this.startIdleLoop();
 
-    // Per-tick updates for expression + mouth drives.
-    this.app.ticker.add(() => this.tick());
+    this.persona = personaKey;
+  }
 
-    this.ready = true;
+  /** Swap to a different persona's avatar live, without a reload. */
+  async setPersona(personaKey) {
+    if (!this.ready || this.persona === personaKey) return;
+    await this.#loadModel(personaKey);
   }
 
   startIdleLoop() {

@@ -30,6 +30,9 @@
       </div>
 
       <section id="chat">
+        <div id="chat-header">
+          <button id="settings-btn" type="button" title="Settings">⚙︎ settings</button>
+        </div>
         <div id="transcript"></div>
         <form id="compose">
           <input
@@ -44,10 +47,72 @@
             <option value="en">English</option>
             <option value="zh">中文</option>
           </select>
+          <select id="persona" title="Companion persona">
+            <option value="female">Iris 她</option>
+            <option value="male">Ira 他</option>
+          </select>
+          <select id="rate" title="Speaking speed">
+            <option value="0">Slow</option>
+            <option value="20" selected>Normal</option>
+            <option value="35">Fast</option>
+            <option value="50">Turbo</option>
+          </select>
         </form>
         <div id="status">connecting…</div>
       </section>
     </main>
+
+    <!--
+      Settings modal — hidden by default, toggled by #settings-btn.
+      Lets the user read and edit persona.md / memory.md directly, see
+      the active session id, and see / change the voice prefs without
+      digging through the compose bar. Both text areas hit GET and POST
+      /api/persona and /api/memory; the server also updates memory.md
+      automatically when iris emits <remember>…</remember> cues.
+    -->
+    <div id="settings-modal" hidden>
+      <div class="settings-backdrop"></div>
+      <div class="settings-panel">
+        <header>
+          <h2>settings</h2>
+          <button id="settings-close" type="button" aria-label="close">×</button>
+        </header>
+
+        <section>
+          <label for="persona-text">persona</label>
+          <p class="hint">Who Iris is. Edit freely — hardcoded output rules always stay on top.</p>
+          <textarea id="persona-text" rows="12" placeholder="Loading…"></textarea>
+          <div class="row">
+            <button id="persona-save" type="button">save persona</button>
+            <button id="persona-reset" type="button" class="ghost">restore default</button>
+          </div>
+        </section>
+
+        <section>
+          <label for="memory-text">memory</label>
+          <p class="hint">Long-term facts Iris knows about you. Iris can add here by saying
+            <code>&lt;remember&gt;…&lt;/remember&gt;</code> mid-reply, and you can edit it
+            directly any time.</p>
+          <textarea id="memory-text" rows="12" placeholder="Loading…"></textarea>
+          <div class="row">
+            <button id="memory-save" type="button">save memory</button>
+            <button id="memory-clear" type="button" class="ghost danger">clear all</button>
+          </div>
+        </section>
+
+        <section>
+          <label>session</label>
+          <p class="hint">Conversation history persists across restarts via this session id.
+            Reset to start fresh.</p>
+          <div class="row">
+            <code id="session-id-view">—</code>
+            <button id="session-reset" type="button" class="ghost danger">new session</button>
+          </div>
+        </section>
+
+        <div id="settings-status"></div>
+      </div>
+    </div>
 
     <script type="module" src="/main.js"></script>
   </body>

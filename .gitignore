@@ -7,3 +7,9 @@ models/*
 scripts/bin/
 scripts/whisper.cpp/
 dist/
+
+# Personal persona / memory / session — user-specific, not committed.
+# Defaults live in persona.default.md and memory.default.md.
+persona.md
+memory.md
+.iris/
