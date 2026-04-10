@@ -28,6 +28,19 @@ import { synthesize, guessLanguage } from "./tts.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3000);
 
+/**
+ * Turn a client expression snapshot into a prompt prefix the assistant
+ * can react to naturally. Skipped if there's no face or the label is
+ * neutral — otherwise Claude starts wedging "I can see you're neutral"
+ * into every reply.
+ */
+function withExpression(userText, expression) {
+  if (!expression || !expression.looking || expression.label === "neutral") {
+    return userText;
+  }
+  return `[I can see on camera that you look ${expression.label}.] ${userText}`;
+}
+
 const app = Fastify({ logger: true });
 
 await app.register(fastifyWebsocket);
@@ -99,7 +112,8 @@ app.get("/ws", { websocket: true }, (socket, req) => {
 
     if (msg.type === "user_text" && typeof msg.text === "string") {
       try {
-        await streamAssistantTurn(msg.text);
+        const userInput = withExpression(msg.text, msg.expression);
+        await streamAssistantTurn(userInput);
       } catch (err) {
         app.log.error(err);
         send({ type: "error", message: err.message || String(err) });
@@ -117,7 +131,8 @@ app.get("/ws", { websocket: true }, (socket, req) => {
           return;
         }
         send({ type: "stt_result", text });
-        await streamAssistantTurn(text);
+        const userInput = withExpression(text, msg.expression);
+        await streamAssistantTurn(userInput);
       } catch (err) {
         app.log.error(err);
         send({ type: "error", message: err.message || String(err) });

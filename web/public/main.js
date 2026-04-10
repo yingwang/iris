@@ -8,7 +8,9 @@
  * Not yet: Live2D avatar, Piper TTS playback, MediaPipe tracking.
  */
 
-import { AudioRecorder, blobToBase64 } from "/audio.js";
+import { blobToBase64 } from "/audio.js";
+import { VADRecorder } from "/vad.js";
+import { FaceTracker } from "/face.js";
 
 const statusEl = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
@@ -117,6 +119,9 @@ async function enqueueTtsAudio(base64) {
 async function pumpPlayQueue() {
   if (playing) return;
   playing = true;
+  ttsSpeaking = true;
+  // Mute mic while iris is talking so she doesn't hear herself.
+  if (vadRecorder) vadRecorder.pause();
   const ctx = ensureAudioCtx();
   if (ctx.state === "suspended") {
     try { await ctx.resume(); } catch {}
@@ -137,6 +142,11 @@ async function pumpPlayQueue() {
     }
   }
   playing = false;
+  ttsSpeaking = false;
+  // Give speakers a beat to settle, then unmute.
+  setTimeout(() => {
+    if (vadRecorder) vadRecorder.resume();
+  }, 300);
 }
 
 function appendBubble(role, text) {
@@ -164,8 +174,9 @@ async function sendAudio(wavBlob) {
   const data = await blobToBase64(wavBlob);
   // Hint whisper about the primary language; "auto" also works.
   const language = (navigator.language || "").startsWith("zh") ? "zh" : "auto";
+  const expression = faceTracker ? faceTracker.snapshot() : null;
   statusEl.textContent = "uploading audio…";
-  ws.send(JSON.stringify({ type: "user_audio", data, language }));
+  ws.send(JSON.stringify({ type: "user_audio", data, language, expression }));
 }
 
 // --- form submit --------------------------------------------------------
@@ -178,83 +189,81 @@ form.addEventListener("submit", (ev) => {
   input.value = "";
 });
 
-// --- voice: record actual audio and let the server transcribe ----------
+// --- continuous voice chat (Silero VAD) ---------------------------------
 
-let recorder = null;
-let recording = false;
+let vadRecorder = null;
+let faceTracker = null;
+let ttsSpeaking = false;
 
-async function startRecording() {
-  if (recording) return;
+async function initVoice() {
   try {
-    recorder = new AudioRecorder();
-    await recorder.start();
-    recording = true;
-    micBtn.classList.add("recording");
-    statusEl.textContent = "listening…";
+    vadRecorder = new VADRecorder({
+      onSpeechStart: () => {
+        statusEl.textContent = "listening…";
+        micBtn.classList.add("recording");
+      },
+      onSpeechEnd: async (wavBlob) => {
+        micBtn.classList.remove("recording");
+        statusEl.textContent = "transcribing…";
+        await sendAudio(wavBlob);
+      },
+      onMisfire: () => {
+        micBtn.classList.remove("recording");
+        statusEl.textContent = "ready";
+      },
+    });
+    await vadRecorder.start();
+    statusEl.textContent = "listening for you · just talk";
   } catch (err) {
     console.error(err);
     statusEl.textContent = `mic error: ${err.message || err.name}`;
-    recorder = null;
   }
 }
 
-async function stopRecording(shouldSend) {
-  if (!recording || !recorder) return;
-  recording = false;
-  micBtn.classList.remove("recording");
-  try {
-    const wavBlob = await recorder.stop();
-    if (shouldSend && wavBlob) await sendAudio(wavBlob);
-    else statusEl.textContent = "ready";
-  } catch (err) {
-    console.error(err);
-    statusEl.textContent = `recorder error: ${err.message || err.name}`;
-  } finally {
-    recorder = null;
+// Toggle mic icon state for visual feedback. It's no longer a button to
+// press; it's just an indicator.
+micBtn.addEventListener("click", (ev) => {
+  ev.preventDefault();
+  if (!vadRecorder) return;
+  if (vadRecorder.paused) {
+    vadRecorder.resume();
+    statusEl.textContent = "listening for you · just talk";
+  } else {
+    vadRecorder.pause();
+    statusEl.textContent = "mic muted — click 🎙️ to resume";
   }
-}
-
-// Mic button: press-and-hold to record, release to send.
-micBtn.addEventListener("pointerdown", (ev) => {
-  ev.preventDefault();
-  startRecording();
-});
-micBtn.addEventListener("pointerup", () => stopRecording(true));
-micBtn.addEventListener("pointercancel", () => stopRecording(false));
-micBtn.addEventListener("pointerleave", () => {
-  if (recording) stopRecording(true);
 });
 
-// Space bar: hold to record, release to send — only when focus is
-// outside the text input (otherwise Space inserts a space).
-window.addEventListener("keydown", (ev) => {
-  if (ev.code !== "Space" || ev.repeat) return;
-  if (document.activeElement === input) return;
-  ev.preventDefault();
-  startRecording();
-});
-window.addEventListener("keyup", (ev) => {
-  if (ev.code !== "Space") return;
-  if (document.activeElement === input) return;
-  ev.preventDefault();
-  stopRecording(true);
-});
+// --- webcam + face tracking ---------------------------------------------
 
-// --- webcam (self-view only for now) ------------------------------------
-
-async function initWebcam() {
+async function initFace() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 320, height: 240 },
+      video: { width: 480, height: 360 },
       audio: false,
     });
     selfView.srcObject = stream;
+    await new Promise((r) => {
+      if (selfView.readyState >= 2) r();
+      else selfView.addEventListener("loadeddata", r, { once: true });
+    });
+    faceTracker = new FaceTracker(selfView);
+    await faceTracker.start();
   } catch (err) {
-    console.warn("webcam unavailable:", err);
+    console.warn("face tracking unavailable:", err);
   }
 }
 
 // --- boot ---------------------------------------------------------------
 
 connect();
-initWebcam();
+initFace();
+// VAD needs a user gesture in most browsers — start it on the first click
+// anywhere, which also unlocks the audio context.
+window.addEventListener(
+  "pointerdown",
+  () => {
+    if (!vadRecorder) initVoice();
+  },
+  { once: true }
+);
