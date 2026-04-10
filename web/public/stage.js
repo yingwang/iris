@@ -130,6 +130,14 @@ export class AvatarStage {
     // and the mouth barely moves with the audio. Monkey-patching
     // internalModel.update means our write is the last thing to
     // touch the parameter before rendering.
+    //
+    // We only override when iris is actually speaking (RMS above
+    // a small epsilon). When silent, we leave the parameter alone
+    // so expressions that themselves set a mouth-open value
+    // (Natori's Surprised, for example, wants an O-shaped mouth)
+    // keep their intended shape. Otherwise the lip sync would
+    // force the mouth closed the moment iris stops talking and
+    // the expression's mouth-open component would be lost.
     try {
       const im = this.model.internalModel;
       if (im && typeof im.update === "function") {
@@ -137,10 +145,12 @@ export class AvatarStage {
         im.update = (...args) => {
           const ret = origUpdate(...args);
           try {
-            im.coreModel?.setParameterValueById?.(
-              "ParamMouthOpenY",
-              this.externalMouth
-            );
+            if (this.externalMouth > 0.01) {
+              im.coreModel?.setParameterValueById?.(
+                "ParamMouthOpenY",
+                this.externalMouth
+              );
+            }
           } catch {}
           return ret;
         };
