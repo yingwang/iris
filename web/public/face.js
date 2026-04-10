@@ -38,6 +38,11 @@ export class FaceTracker {
     this.landmarker = null;
     this.lastResult = null;
     this.running = false;
+    // When true, loop() skips the inference step but keeps the
+    // scheduler alive. main.js flips this during TTS playback so
+    // face detection doesn't fight Live2D + audio decoding for
+    // the main thread while iris is speaking.
+    this.paused = false;
     this.latest = defaultSnapshot();
   }
 
@@ -74,7 +79,12 @@ export class FaceTracker {
 
   loop() {
     if (!this.running) return;
-    if (this.videoEl.readyState >= 2) {
+    // Skip the actual MediaPipe call when paused (typically set by
+    // main.js during TTS playback) — the inference is the expensive
+    // part, so this gives the main thread back to Live2D and audio
+    // decoding while iris is speaking. We keep the scheduler alive
+    // so the loop resumes the instant paused flips back to false.
+    if (!this.paused && this.videoEl.readyState >= 2) {
       try {
         const now = performance.now();
         const result = this.landmarker.detectForVideo(this.videoEl, now);
@@ -87,14 +97,12 @@ export class FaceTracker {
         // swallow transient errors (first frame, resize, etc.)
       }
     }
-    // Throttle to ~1 Hz. A single MediaPipe inference takes around
-    // 250–300 ms on this CPU (Intel Mac, no GPU delegate), so
-    // running continuously hammers the main thread and stutters
-    // Live2D / TTS. Once per second is plenty for the bracketed
-    // face hint we prepend to user turns — expressions don't
-    // change that fast, and the snapshot is only actually read
-    // when the user sends audio or text.
-    setTimeout(() => this.loop(), 1000);
+    // Throttle between inferences. Each MediaPipe call takes
+    // ~250–300 ms on this CPU, so anything below ~1.5 s ends up
+    // running back-to-back and triggering browser 'setTimeout took
+    // Nms' violations. 2 s keeps CPU load low while still giving
+    // a reasonably fresh snapshot whenever the user sends a turn.
+    setTimeout(() => this.loop(), this.paused ? 500 : 2000);
   }
 
   /** Return the most recent expression snapshot (safe to call from anywhere). */

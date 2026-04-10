@@ -304,6 +304,11 @@ async function pumpPlayQueue() {
   playing = true;
   ttsSpeaking = true;
   ttsStartedAt = Date.now();
+  // Pause face tracking while iris is speaking — MediaPipe's
+  // inference is ~280 ms on this CPU and fights Live2D / audio
+  // decoding for main-thread time. The user isn't looking at their
+  // own face during playback anyway, so a gap in the hint is fine.
+  if (faceTracker) faceTracker.paused = true;
   // We used to mute the mic here, but the user asked for voice
   // interrupt, so we now leave the VAD running. getUserMedia's
   // built-in echoCancellation handles most of the feedback; the
@@ -346,6 +351,8 @@ async function pumpPlayQueue() {
   playing = false;
   ttsSpeaking = false;
   avatarStage?.setMouthOpen(0);
+  // Resume face tracking now that iris has stopped speaking.
+  if (faceTracker) faceTracker.paused = false;
 }
 
 function appendBubble(role, text) {
@@ -588,6 +595,7 @@ function interruptIris() {
   // chunks would keep appending to the stopped bubble.
   currentAssistantBubble = null;
   avatarStage?.setMouthOpen(0);
+  if (faceTracker) faceTracker.paused = false;
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "interrupt" }));
   }

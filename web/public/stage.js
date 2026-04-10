@@ -378,59 +378,79 @@ export class AvatarStage {
     if (!this.model || !this.model.expression) return;
     const key = (mood || "").toLowerCase().trim();
     if (!key) return;
-    const MOOD_ORDER = [
-      "happy",
-      "surprised",
-      "sad",
-      "curious",
-      "playful",
-      "confused",
-      "shy",
-      "serious",
-    ];
-    const moodIdx = MOOD_ORDER.indexOf(key);
-    if (moodIdx < 0) return;
 
     const names = this.expressionNames || [];
+    const has = (name) =>
+      names.some((n) => n.toLowerCase() === name.toLowerCase());
 
-    // Strategy 1: match by name. Covers models whose expressions
-    // are literally called "happy" / "sad" / etc., plus the Haru
-    // legacy "f01..f08" mapping handled explicitly below.
-    const nameCandidates = [
-      key,
-      key[0].toUpperCase() + key.slice(1),
-      `${key}.exp3`,
-      `${key}.exp3.json`,
-    ];
-    let chosen = nameCandidates.find((c) =>
-      names.some((n) => n.toLowerCase() === c.toLowerCase())
-    );
+    // Per-model mood maps. Each model's expression set has
+    // different names and different available slots — hardcoding
+    // the mapping per model is uglier than auto-discovery but
+    // gives the only semantically correct result.
+    //
+    // Haru (female default, pixi-live2d-display test asset): ships
+    // eight expression files f01..f08 in arbitrary order, no
+    // semantic names. The legacy 1:1 mapping below is what the
+    // project used since the first Live2D commit.
+    //
+    // Natori (male default, Live2D/CubismWebSamples): ships 11
+    // slots — six with mood names (Angry, Blushing, Normal, Sad,
+    // Smile, Surprised) plus five unlabeled exp_NN. We use the
+    // named ones and leave the rest alone.
+    const MOOD_MAPS = {
+      haru: {
+        happy: "f01",
+        surprised: "f02",
+        sad: "f03",
+        curious: "f04",
+        playful: "f05",
+        confused: "f06",
+        shy: "f07",
+        serious: "f08",
+      },
+      natori: {
+        happy: "Smile",
+        surprised: "Surprised",
+        sad: "Sad",
+        curious: "Normal",
+        playful: "Smile",
+        confused: "Sad",
+        shy: "Blushing",
+        serious: "Angry",
+      },
+    };
 
-    // Strategy 2: Haru's legacy f01..f08 slot mapping, but only if
-    // the discovered names actually include those slots.
-    if (!chosen) {
-      const haruSlots = ["f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08"];
-      const haruSlot = haruSlots[moodIdx];
-      if (
-        names.some(
-          (n) =>
-            n.toLowerCase() === haruSlot ||
-            n.toLowerCase() === `${haruSlot}.exp3` ||
-            n.toLowerCase() === `${haruSlot}.exp3.json`
-        )
-      ) {
-        chosen = haruSlot;
-      }
+    // Detect which model we're on by looking at its expression
+    // name set. Haru has f01..f08, Natori has Smile/Sad/etc.
+    let modelKey = null;
+    if (has("f01") || has("f01.exp3") || has("f01.exp3.json")) {
+      modelKey = "haru";
+    } else if (has("Smile") && has("Sad")) {
+      modelKey = "natori";
     }
 
-    // Explicitly DON'T fall back to arbitrary index mapping on
-    // models whose expression names are nonsemantic (Natori's
-    // exp_01..exp_11, for example). A random-looking expression
-    // change feels worse than no change at all — iris just stays
-    // on her current face.
+    let chosen = null;
+    if (modelKey) {
+      chosen = MOOD_MAPS[modelKey][key] || null;
+    }
+
+    // Generic name-match fallback for custom models the user drops
+    // in via IRIS_AVATAR_*_URL that happen to have mood-named
+    // expressions. We don't do arbitrary index mapping — a
+    // random-looking expression change feels worse than none.
+    if (!chosen) {
+      const candidates = [
+        key,
+        key[0].toUpperCase() + key.slice(1),
+        `${key}.exp3`,
+        `${key}.exp3.json`,
+      ];
+      chosen = candidates.find((c) => has(c));
+    }
+
     if (!chosen) {
       console.log(
-        `[stage] mood ${key}: no semantic expression match, skipping`
+        `[stage] mood ${key}: no matching expression, skipping`
       );
       return;
     }
