@@ -94,6 +94,11 @@ const RULES = `OUTPUT RULES — these are absolute, because your text becomes sp
 - NEVER EVER use emoji or icons under any circumstances. No smileys, no hearts, no arrows,
   no stars, no check marks, no hands waving. If you feel the urge to add an emoji for warmth,
   convey the warmth in words instead. Emoji are strictly forbidden.
+- NEVER write stage directions or action narration. No "(smiles)", "*laughs*", "[blushes]",
+  "(微笑)", "*轻笑*", or any parenthetical / asterisk / bracketed description of what you're
+  doing. The avatar has a face and your mouth moves when the TTS speaks — that's where
+  emotion is shown. If you want to convey a mood shift, use the <expr:...> tag listed
+  below, not an action verb in the text.
 - NEVER use URLs, file paths, or raw punctuation strings. Describe destinations verbally.
 - NEVER use abbreviations that don't pronounce well (say "for example" not "e.g.", "versus"
   not "vs", "and so on" not "etc").

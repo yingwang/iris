@@ -45,20 +45,55 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3000);
 
 /**
- * Strip characters that sound broken when piped through TTS. Even
- * though the system prompt forbids emoji / markdown / code, Claude
- * sometimes drops them in anyway — especially emoji after lists. We
- * scrub them server-side so the TTS voice never reads "dog face emoji"
- * out loud. Expression tags are already gone by the time text reaches
- * here (they're stripped by the streaming state machine below), so
- * this only handles emoji / markdown residue.
+ * Remove emoji and text-based stage directions that the user asked
+ * NOT to see in the chat bubble. Emotions are supposed to be shown
+ * via the avatar's <expr:...> cues, not via inline annotations.
+ *
+ * Covers:
+ *   - Unicode emoji (Extended_Pictographic + ZWJ / variation selectors)
+ *   - *asterisk stage directions*
+ *   - (parenthetical emotion verbs) — "(smiles)", "(laughs softly)"
+ *   - [bracketed emotion verbs] — "[blushes]"
+ *
+ * Only matches complete patterns within the given text, so chunks
+ * that split a stage direction across boundaries (rare — Claude
+ * usually chunks by word or phrase) can still leak briefly.
+ */
+const EMOTION_VERBS =
+  "smile|smiles|smiling|grin|grins|grinning|laugh|laughs|laughing|" +
+  "blush|blushes|blushing|wink|winks|winking|nod|nods|nodding|" +
+  "chuckle|chuckles|chuckling|giggle|giggles|giggling|sigh|sighs|sighing|" +
+  "frown|frowns|frowning|pout|pouts|tilts? head|thinks?|smirk|smirks|" +
+  "shrug|shrugs|shrugging|beam|beams|beaming|" +
+  "笑|微笑|大笑|轻笑|窃笑|皱眉|叹气|点头|摇头|眨眼|脸红|耸肩|沉思";
+
+function stripDisplayClutter(text) {
+  return text
+    // Emoji + variation selectors / ZWJ
+    .replace(/\p{Extended_Pictographic}/gu, "")
+    .replace(/[\u200d\ufe0f]/g, "")
+    // *asterisk stage directions*
+    .replace(/\*[^*\n]{1,40}\*/g, "")
+    // (parenthetical emotion verbs)
+    .replace(
+      new RegExp(`\\(\\s*(?:${EMOTION_VERBS})[^)\\n]{0,40}\\)`, "gi"),
+      ""
+    )
+    // [bracketed emotion verbs]
+    .replace(
+      new RegExp(`\\[\\s*(?:${EMOTION_VERBS})[^\\]\\n]{0,40}\\]`, "gi"),
+      ""
+    );
+}
+
+/**
+ * Strip characters that sound broken when piped through TTS. Runs
+ * on top of stripDisplayClutter to additionally remove markdown
+ * markers and collapse stray whitespace — things that are fine in
+ * the chat bubble but would be read aloud awkwardly.
  */
 function stripForSpeech(text) {
-  return text
-    // Extended_Pictographic covers emoji, dingbats, pictographs.
-    .replace(/\p{Extended_Pictographic}/gu, "")
-    // Variation selectors and zero-width joiners that follow emoji.
-    .replace(/[\u200d\ufe0f]/g, "")
+  return stripDisplayClutter(text)
     // Inline code and bold/italic markdown markers.
     .replace(/[`*_~]/g, "")
     // Headers and bullet prefixes at line starts.
@@ -379,7 +414,8 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       // appended to memory.md and forwarded to the client as a
       // lightweight "memory_saved" notification so the UI can
       // surface it.
-      const { text: cleaned, facts } = extractRememberBlocks(exprCleaned);
+      const { text: rememberCleaned, facts } =
+        extractRememberBlocks(exprCleaned);
       for (const fact of facts) {
         try {
           appendMemory(fact);
@@ -389,6 +425,13 @@ app.get("/ws", { websocket: true }, (socket, req) => {
           app.log.warn({ err: err.message }, "failed to save memory");
         }
       }
+      // Strip emoji and stage directions from the displayable text
+      // BEFORE it reaches the chat bubble. The user asked for
+      // emotions to be shown via the avatar rather than as inline
+      // markers, so neither 😊 nor "(smiles)" should ever appear
+      // in the transcript. TTS also runs this via stripForSpeech
+      // which wraps stripDisplayClutter internally.
+      const cleaned = stripDisplayClutter(rememberCleaned);
       if (cleaned) {
         send({ type: "assistant_chunk", text: cleaned });
         full += cleaned;
