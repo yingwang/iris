@@ -87,13 +87,14 @@ export class FaceTracker {
         // swallow transient errors (first frame, resize, etc.)
       }
     }
-    // Throttle to ~6–7 Hz. MediaPipe face landmarker on CPU (Intel
-    // Mac, no GPU delegate) takes ~100 ms per inference — running
-    // every rAF frame (60 Hz target) is impossible and backs up the
-    // frame queue, causing the Live2D / TTS pipeline to stutter too.
-    // 150 ms is plenty for "react to the user's face" and leaves
-    // the main thread mostly idle for the rest of the render loop.
-    setTimeout(() => this.loop(), 150);
+    // Throttle to ~1 Hz. A single MediaPipe inference takes around
+    // 250–300 ms on this CPU (Intel Mac, no GPU delegate), so
+    // running continuously hammers the main thread and stutters
+    // Live2D / TTS. Once per second is plenty for the bracketed
+    // face hint we prepend to user turns — expressions don't
+    // change that fast, and the snapshot is only actually read
+    // when the user sends audio or text.
+    setTimeout(() => this.loop(), 1000);
   }
 
   /** Return the most recent expression snapshot (safe to call from anywhere). */
