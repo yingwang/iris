@@ -71,12 +71,72 @@ function handleServerMessage(msg) {
       currentAssistantBubble = null;
       statusEl.textContent = "ready";
       break;
+    case "tts_audio":
+      enqueueTtsAudio(msg.data);
+      break;
     case "error":
       appendBubble("assistant", `⚠️ ${msg.message}`);
       currentAssistantBubble = null;
       statusEl.textContent = `error: ${msg.message}`;
       break;
   }
+}
+
+// --- TTS playback queue ------------------------------------------------
+//
+// Server sends one base64 WAV per spoken sentence. We play them in order
+// using a single AudioContext so there's no gap between sentences. The
+// first play after a user gesture unlocks audio in most browsers — we
+// prime the context on the first pointerdown anywhere.
+
+let audioCtx = null;
+const playQueue = [];
+let playing = false;
+
+function ensureAudioCtx() {
+  if (audioCtx) return audioCtx;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  audioCtx = new Ctx();
+  return audioCtx;
+}
+
+window.addEventListener("pointerdown", () => {
+  const ctx = ensureAudioCtx();
+  if (ctx.state === "suspended") ctx.resume();
+}, { once: false });
+
+async function enqueueTtsAudio(base64) {
+  const bin = atob(base64);
+  const len = bin.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+  playQueue.push(bytes.buffer);
+  if (!playing) pumpPlayQueue();
+}
+
+async function pumpPlayQueue() {
+  if (playing) return;
+  playing = true;
+  const ctx = ensureAudioCtx();
+  if (ctx.state === "suspended") {
+    try { await ctx.resume(); } catch {}
+  }
+  while (playQueue.length > 0) {
+    const ab = playQueue.shift();
+    try {
+      const buffer = await ctx.decodeAudioData(ab.slice(0));
+      await new Promise((resolve) => {
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        src.connect(ctx.destination);
+        src.onended = resolve;
+        src.start();
+      });
+    } catch (err) {
+      console.warn("tts decode/play failed:", err);
+    }
+  }
+  playing = false;
 }
 
 function appendBubble(role, text) {

@@ -16,8 +16,8 @@ Status: **early scaffolding** — only text chat streaming works today. Roadmap 
 ```
 
 - **Brain**: Claude Code CLI (`claude -p … --output-format stream-json`) as a subprocess. Uses your existing Claude subscription — no API key needed.
-- **STT**: Whisper.cpp running locally (not wired yet).
-- **TTS**: Piper running locally (not wired yet).
+- **STT**: whisper.cpp (base.ggml) running locally on CPU. See `install-whisper.sh`.
+- **TTS**: macOS built-in `say` command, because Piper's macOS x64 release is broken (missing dylibs). Tingting for Chinese, Samantha for English — both are neural voices that sound fine. Apple Silicon users can swap in Piper later.
 - **Avatar**: Live2D Cubism via `pixi-live2d-display` (not wired yet).
 - **Tracking**: MediaPipe Holistic for user face + driving the avatar's blendshape-like parameters (not wired yet).
 
@@ -25,8 +25,8 @@ Status: **early scaffolding** — only text chat streaming works today. Roadmap 
 
 - [x] M1 — text chat: WebSocket → Claude Code CLI → streaming text back to browser
 - [x] M3 — voice in: mic capture → WAV encode → server whisper.cpp → text → Claude
+- [x] M4 — voice out: sentence-by-sentence macOS `say` → WAV → Web Audio playback
 - [ ] M2 — webcam preview + MediaPipe Holistic tracking (user face only)
-- [ ] M4 — voice out: Piper TTS on server → stream wav to browser → Web Audio playback
 - [ ] M5 — Live2D avatar: load a free model, basic idle animation
 - [ ] M6 — lip sync: drive mouth params from TTS audio amplitude / phonemes
 - [ ] M7 — expressions: map MediaPipe face blendshapes onto Live2D parameters
