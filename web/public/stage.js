@@ -146,9 +146,24 @@ export class AvatarStage {
           const ret = origUpdate(...args);
           try {
             if (this.externalMouth > 0.01) {
-              im.coreModel?.setParameterValueById?.(
+              const core = im.coreModel;
+              core?.setParameterValueById?.(
                 "ParamMouthOpenY",
                 this.externalMouth
+              );
+              // Richer mouth: give louder syllables a small additive
+              // nudge to ParamMouthForm. We read the current value
+              // first (which reflects whatever the active expression
+              // set) and add a capped-small boost on top, so the
+              // mood — Angry lip curl, Sad downturn — still wins,
+              // but the mouth animates a bit during speech instead
+              // of being dead-still at the expression's resting form.
+              const curForm =
+                core?.getParameterValueById?.("ParamMouthForm") || 0;
+              const boost = Math.min(0.15, this.externalMouth * 0.25);
+              core?.setParameterValueById?.(
+                "ParamMouthForm",
+                curForm + boost
               );
             }
           } catch {}
@@ -338,6 +353,46 @@ export class AvatarStage {
   /** Drive mouth from TTS amplitude. Called by main.js audio analyser. */
   setMouthOpen(v) {
     this.externalMouth = clamp01(v);
+  }
+
+  /**
+   * Drive Live2D's focus point (eyes + head tilt toward a location
+   * on the canvas). main.js calls this with a location derived from
+   * the user's head position in the MediaPipe face landmarks, so
+   * iris appears to make eye contact — her gaze follows your face
+   * around in the self-view.
+   */
+  setFocus(x, y) {
+    if (!this.model) return;
+    try {
+      this.model.focus(x, y);
+    } catch {}
+  }
+
+  /**
+   * Kick off a speaking body motion. Called by main.js when TTS
+   * playback starts so iris's body moves while she talks, rather
+   * than staying in the static idle pose. We try a few common
+   * non-Idle motion groups first (TapBody etc.) and fall back to
+   * a fresh random Idle re-trigger when none exist.
+   */
+  playSpeakingMotion() {
+    if (!this.model) return;
+    const groups = ["TapBody", "Tap", "TapHead", "Body", "Speak"];
+    for (const g of groups) {
+      try {
+        const ret = this.model.motion(g, undefined, 2);
+        // pixi-live2d-display returns a Promise<boolean> or
+        // boolean depending on version; any truthy/pending value
+        // means the group existed.
+        if (ret) return;
+      } catch {}
+    }
+    // Fallback: re-trigger idle at a slightly higher priority so
+    // the current idle restarts with a fresh random pick.
+    try {
+      this.model.motion("Idle", undefined, 2);
+    } catch {}
   }
 
   /**

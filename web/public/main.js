@@ -21,6 +21,7 @@ const micBtn = document.getElementById("mic");
 const langSel = document.getElementById("lang");
 const personaSel = document.getElementById("persona");
 const rateSel = document.getElementById("rate");
+const modelSel = document.getElementById("model");
 const selfView = document.getElementById("self-view");
 const avatarCanvas = document.getElementById("avatar");
 const faceDebugEl = document.getElementById("face-debug");
@@ -34,6 +35,7 @@ const faceDebugEl = document.getElementById("face-debug");
 const LANG_STORAGE_KEY = "iris.sttLanguage";
 const PRESET_STORAGE_KEY = "iris.voicePreset";
 const RATE_STORAGE_KEY = "iris.ttsRate";
+const MODEL_STORAGE_KEY = "iris.claudeModel";
 
 // Preset metadata lookup table, populated from /api/config on boot.
 // Shape: { "female-xiaoxiao": { gender, label, avatarUrl }, ... }
@@ -138,6 +140,19 @@ rateSel.addEventListener("change", () => {
   pushConfig();
 });
 
+// Model selector (Sonnet / Opus / Haiku). Changing the model
+// resets the Claude session server-side because the system prompt
+// has to be re-baked for the new model — conversation history is
+// lost, and there's no way around that without API key auth.
+const savedModel = localStorage.getItem(MODEL_STORAGE_KEY);
+if (savedModel && ["sonnet", "opus", "haiku"].includes(savedModel)) {
+  modelSel.value = savedModel;
+}
+modelSel.addEventListener("change", () => {
+  localStorage.setItem(MODEL_STORAGE_KEY, modelSel.value);
+  pushConfig();
+});
+
 function pushConfig() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(
@@ -145,6 +160,7 @@ function pushConfig() {
       type: "config",
       preset: personaSel.value,
       rate: Number(rateSel.value),
+      model: modelSel.value,
     })
   );
 }
@@ -304,6 +320,10 @@ async function pumpPlayQueue() {
   playing = true;
   ttsSpeaking = true;
   ttsStartedAt = Date.now();
+  // Trigger a "speaking" body motion so iris's torso moves while
+  // she talks — not just her mouth. Tries a handful of common
+  // non-idle groups and falls back to re-triggering Idle.
+  avatarStage?.playSpeakingMotion?.();
   // Pause face tracking while iris is speaking — MediaPipe's
   // inference is ~280 ms on this CPU and fights Live2D / audio
   // decoding for main-thread time. The user isn't looking at their
@@ -644,7 +664,76 @@ async function initFace() {
         `face: ${snap.label} · smile ${snap.smile.toFixed(2)}` +
         ` browUp ${snap.browUp.toFixed(2)} eyes ${snap.eyesClosed.toFixed(2)}` +
         (snap.looking ? "" : " · NO FACE");
-    }, 80);
+    }, 250);
+
+    // Eye-contact loop — poll the face snapshot's head position
+    // (normalized 0..1 from MediaPipe landmark 1, the nose tip)
+    // and drive Live2D's focus() so iris's eyes + head tilt
+    // follow the user's face around the self-view. We mirror x
+    // because the video is mirrored with CSS scaleX(-1). Runs at
+    // 8 Hz — more than enough for natural "tracking" feel and
+    // cheap since the snapshot is a plain object read.
+    setInterval(() => {
+      if (!faceTracker || !avatarStage?.app) return;
+      const snap = faceTracker.snapshot();
+      if (!snap.looking) return;
+      const screen = avatarStage.app.renderer.screen;
+      // MediaPipe x is 0 on left, 1 on right (in the video).
+      // After CSS mirror the user's left = screen's right, so we
+      // don't mirror here — driving focus toward the same x as
+      // the user's head feels correct because it matches the
+      // mirror image they see.
+      const fx = snap.headX * screen.width;
+      const fy = snap.headY * screen.height;
+      avatarStage.setFocus(fx, fy);
+    }, 125);
+
+    // Leave-and-return detection. When the user steps out of view
+    // or comes back, fire a "face_transition" message to the
+    // server so iris can say a short check-in line. Debounce on
+    // both directions — state must be stable for 2 s to count.
+    let lastStable = null;
+    let pending = null;
+    let pendingSince = 0;
+    let lastEmitAt = 0;
+    setInterval(() => {
+      if (!faceTracker || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const snap = faceTracker.snapshot();
+      const state = snap.looking ? "present" : "away";
+      if (state !== lastStable) {
+        if (pending !== state) {
+          pending = state;
+          pendingSince = Date.now();
+          return;
+        }
+        if (Date.now() - pendingSince < 2000) return;
+        // Stable for 2 s — consider it a transition.
+        const now = Date.now();
+        if (now - lastEmitAt < 15000) {
+          // Rate-limit so a flaky camera doesn't spam iris with
+          // leave/return pings.
+          lastStable = state;
+          pending = null;
+          return;
+        }
+        if (lastStable !== null) {
+          // Only emit AFTER we've observed a baseline state, so
+          // initial "no face yet" doesn't trigger an immediate
+          // welcome message.
+          ws.send(
+            JSON.stringify({
+              type: "face_transition",
+              event: state === "away" ? "left" : "returned",
+            })
+          );
+          lastEmitAt = now;
+        }
+        lastStable = state;
+        pending = null;
+      } else {
+        pending = null;
+      }
+    }, 500);
   } catch (err) {
     console.error("face tracking unavailable:", err);
     faceDebugEl.textContent = `face: FAILED — ${err.message || err.name}`;

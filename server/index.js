@@ -347,6 +347,16 @@ app.get("/ws", { websocket: true }, (socket, req) => {
   // static state.
   let lastFaceLabel = null;
 
+  // True while an assistant turn is actively streaming through
+  // streamAssistantTurn. Used to serialize ambient / face-transition
+  // triggered turns so they don't collide with user turns.
+  let turnInFlight = false;
+
+  // Timestamp of the last time the user actually said or typed
+  // something. Used by the ambient check-in timer to decide when
+  // to nudge iris into saying something during a long silence.
+  let lastUserActivityAt = Date.now();
+
   const send = (obj) => socket.send(JSON.stringify(obj));
 
   /**
@@ -369,6 +379,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
    * blobs in order, so iris starts speaking before Claude finishes writing.
    */
   const streamAssistantTurn = async (userText) => {
+    turnInFlight = true;
     app.log.info({ prompt: userText.slice(0, 200) }, "→ claude");
     const turnStartedAt = Date.now();
     const isInterrupted = () => interruptedAt > turnStartedAt;
@@ -484,6 +495,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
     if (!isInterrupted()) {
       send({ type: "assistant_end" });
     }
+    turnInFlight = false;
     return full;
   };
 
@@ -497,6 +509,28 @@ app.get("/ws", { websocket: true }, (socket, req) => {
 
     if (msg.type === "interrupt") {
       interruptCurrent();
+      return;
+    }
+
+    // Face transition events from the client's leave/return
+    // detector. Triggers a short check-in turn so iris notices
+    // when the user steps out of view or comes back.
+    if (msg.type === "face_transition") {
+      if (turnInFlight) return; // don't clobber an active reply
+      const prompt =
+        msg.event === "left"
+          ? "[System: The user just stepped out of the camera view. " +
+            "Say one short line noticing it casually, like 'where'd you " +
+            "go' or '殿下去哪了'. Don't be clingy — one line only, match " +
+            "your persona's voice.]"
+          : "[System: The user just came back into the camera view after " +
+            "being away. Welcome them back in one short warm line. Match " +
+            "your persona's voice. One line only.]";
+      try {
+        await streamAssistantTurn(prompt);
+      } catch (err) {
+        app.log.warn({ err: err.message }, "face transition turn failed");
+      }
       return;
     }
 
@@ -516,12 +550,23 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       if (typeof msg.rate === "number") {
         voicePrefs.rate = Math.max(-50, Math.min(50, Math.round(msg.rate)));
       }
-      app.log.info({ voicePrefs }, "config updated");
+      if (
+        typeof msg.model === "string" &&
+        ["sonnet", "opus", "haiku"].includes(msg.model)
+      ) {
+        // Changing the underlying Claude model also forces a
+        // session reset because --resume can't cross model
+        // boundaries cleanly. History is lost but the next reply
+        // uses the newly picked model.
+        session.setModel(msg.model);
+      }
+      app.log.info({ voicePrefs, model: session.model }, "config updated");
       return;
     }
 
     if (msg.type === "user_text" && typeof msg.text === "string") {
       try {
+        lastUserActivityAt = Date.now();
         const userInput = withExpression(
           msg.text,
           msg.expression,
@@ -540,6 +585,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
 
     if (msg.type === "user_audio" && typeof msg.data === "string") {
       try {
+        lastUserActivityAt = Date.now();
         const wav = Buffer.from(msg.data, "base64");
         send({ type: "stt_started" });
         const { text, engine } = await transcribe(wav, {
@@ -613,6 +659,33 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       }
     }, 600);
   }
+
+  // Ambient check-in timer. When the user goes silent for a while
+  // AND iris isn't currently speaking / holding a turn, nudge her
+  // to say one short line so the conversation doesn't feel dead.
+  const AMBIENT_SILENCE_MS = 90000;
+  const ambientTimer = setInterval(async () => {
+    if (socket.readyState !== 1) return;
+    if (turnInFlight) return;
+    const idle = Date.now() - lastUserActivityAt;
+    if (idle < AMBIENT_SILENCE_MS) return;
+    // Reset the clock to half-interval so the next ambient fires at
+    // least 45 s later even if the user stays quiet. Keeps iris from
+    // talking into the void every 15 s.
+    lastUserActivityAt = Date.now() - AMBIENT_SILENCE_MS / 2;
+    const prompt =
+      "[System note: the user has been quiet for about " +
+      Math.round(idle / 1000) +
+      " seconds. Say one short natural line to gently check in, like " +
+      "'still there?' or '殿下在想什么'. Match your persona's voice. " +
+      "One line only, don't push or repeat yourself.]";
+    try {
+      await streamAssistantTurn(prompt);
+    } catch (err) {
+      app.log.warn({ err: err.message }, "ambient check-in failed");
+    }
+  }, 15000);
+  socket.on("close", () => clearInterval(ambientTimer));
 });
 
 const hasWhisper = await whisperAvailable();

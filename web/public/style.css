@@ -175,7 +175,8 @@ main {
 }
 #lang,
 #persona,
-#rate {
+#rate,
+#model {
   padding: 0 10px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -189,7 +190,8 @@ main {
 }
 #lang:focus,
 #persona:focus,
-#rate:focus {
+#rate:focus,
+#model:focus {
   outline: none;
   border-color: var(--accent);
 }

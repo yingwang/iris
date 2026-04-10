@@ -508,6 +508,19 @@ export class ClaudeSession {
   }
 
   /**
+   * Switch to a different Claude model (sonnet / opus / haiku).
+   * Claude Code CLI's --resume can't cross model boundaries
+   * cleanly, so this also triggers a full session reset and the
+   * conversation history is lost. The next reply runs on the new
+   * model.
+   */
+  setModel(newModel) {
+    if (!newModel || newModel === this.model) return;
+    this.model = newModel;
+    this.resetSession();
+  }
+
+  /**
    * Lazily spawn the persistent subprocess. Safe to call many times —
    * only the first one does work, the rest return immediately. Spawns
    * with --session-id on the cold start and --resume on any respawn

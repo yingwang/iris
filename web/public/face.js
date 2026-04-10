@@ -89,7 +89,21 @@ export class FaceTracker {
         const now = performance.now();
         const result = this.landmarker.detectForVideo(this.videoEl, now);
         if (result && result.faceBlendshapes && result.faceBlendshapes.length) {
-          this.latest = snapshotFromBlendshapes(result.faceBlendshapes[0]);
+          const snap = snapshotFromBlendshapes(result.faceBlendshapes[0]);
+          // Also pull nose tip position from the 468 face landmarks
+          // so main.js can drive Live2D's model.focus at the user's
+          // actual face location (eye contact). Coordinates are
+          // normalised 0..1 in the video frame.
+          if (result.faceLandmarks && result.faceLandmarks.length) {
+            // Landmark index 1 is the nose tip in MediaPipe's 468-
+            // point face mesh. Use it as a single head-center proxy.
+            const nose = result.faceLandmarks[0][1];
+            if (nose) {
+              snap.headX = nose.x;
+              snap.headY = nose.y;
+            }
+          }
+          this.latest = snap;
         } else {
           this.latest = { ...defaultSnapshot(), looking: false, label: "looking away" };
         }
@@ -120,6 +134,8 @@ function defaultSnapshot() {
     mouthOpen: 0,
     looking: false,
     label: "looking away",
+    headX: 0.5,
+    headY: 0.5,
   };
 }
 
