@@ -84,6 +84,3 @@ iris/
 └── package.json
 ```
 
-## Not a product
-
-iris is a personal tool that wraps the officially-supported `claude -p` CLI so the user can talk to Claude with their own hands-free setup. It is not a proxy, not a SaaS, and should not be sold or redistributed — that would violate Anthropic's subscription terms. Keep it for yourself.
