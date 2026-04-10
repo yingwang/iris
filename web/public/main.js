@@ -79,6 +79,9 @@ function handleServerMessage(msg) {
     case "tts_audio":
       enqueueTtsAudio(msg.data);
       break;
+    case "avatar_expression":
+      avatarStage?.setMood(msg.name);
+      break;
     case "error":
       appendBubble("assistant", `⚠️ ${msg.message}`);
       currentAssistantBubble = null;

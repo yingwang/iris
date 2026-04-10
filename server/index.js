@@ -33,11 +33,14 @@ const PORT = Number(process.env.PORT ?? 3000);
  * though the system prompt forbids emoji / markdown / code, Claude
  * sometimes drops them in anyway — especially emoji after lists. We
  * scrub them server-side so the TTS voice never reads "dog face emoji"
- * out loud. The original text still goes into the transcript bubble,
- * so the user sees exactly what Claude wrote.
+ * out loud. Also strip <expr:...> mood cues so they don't get spoken.
+ * The original text still goes into the transcript bubble, so the
+ * user sees exactly what Claude wrote.
  */
 function stripForSpeech(text) {
   return text
+    // Mood tags: <expr:happy>, <expr:curious>, etc.
+    .replace(/<expr:[a-z]+>/gi, "")
     // Extended_Pictographic covers emoji, dingbats, pictographs.
     .replace(/\p{Extended_Pictographic}/gu, "")
     // Variation selectors and zero-width joiners that follow emoji.
@@ -49,6 +52,19 @@ function stripForSpeech(text) {
     // Collapse whitespace runs introduced by stripping.
     .replace(/\s{2,}/g, " ")
     .trim();
+}
+
+/**
+ * Scan `text` for <expr:NAME> mood cues and return the list of names
+ * that appear. Used to forward expression commands to the browser as
+ * they arrive in the streaming Claude output.
+ */
+function extractExpressions(text) {
+  const out = [];
+  const re = /<expr:([a-z]+)>/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) out.push(m[1].toLowerCase());
+  return out;
 }
 
 /**
@@ -125,10 +141,19 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       }
     };
 
+    let expressionScanFrom = 0;
     for await (const chunk of session.send(userText)) {
       send({ type: "assistant_chunk", text: chunk });
       full += chunk;
       buffer += chunk;
+      // Scan only newly-arrived bytes for expression cues so we
+      // don't re-fire ones we already forwarded.
+      const newSlice = full.slice(expressionScanFrom);
+      const cues = extractExpressions(newSlice);
+      if (cues.length) {
+        for (const name of cues) send({ type: "avatar_expression", name });
+        expressionScanFrom = full.length;
+      }
       // Try to emit speech as sentences complete (non-blocking flush
       // semantics: we await but it's usually sub-second per sentence).
       await flush(false);

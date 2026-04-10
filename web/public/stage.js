@@ -161,9 +161,6 @@ export class AvatarStage {
 
   setExpression(label) {
     if (!this.model || !this.model.expression) return;
-    // If the model has named expressions that match our labels,
-    // trigger them. Haru has a handful (f01..f08) — label-to-name
-    // mapping is model-specific, so we ignore unknown labels.
     const mapping = {
       smiling: "f01",
       laughing: "f01",
@@ -175,6 +172,35 @@ export class AvatarStage {
       try {
         this.model.expression(name);
       } catch (_) {}
+    }
+  }
+
+  /**
+   * Apply a Claude-emitted mood cue (happy, surprised, sad, curious,
+   * playful, confused, shy, serious) to one of Haru's expression
+   * files. Haru ships with f01..f08 and the label-to-file mapping is
+   * somewhat arbitrary — what matters is that a change actually
+   * shifts the face.
+   */
+  setMood(mood) {
+    if (!this.model || !this.model.expression) return;
+    const MOOD_TO_FILE = {
+      happy: "f01",
+      surprised: "f02",
+      sad: "f03",
+      curious: "f04",
+      playful: "f05",
+      confused: "f06",
+      shy: "f07",
+      serious: "f08",
+    };
+    const key = (mood || "").toLowerCase();
+    const name = MOOD_TO_FILE[key];
+    if (!name) return;
+    try {
+      this.model.expression(name);
+    } catch (err) {
+      console.warn("expression failed:", err);
     }
   }
 }
