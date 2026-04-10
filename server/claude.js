@@ -181,23 +181,39 @@ export class ClaudeSession {
  * Pull user-visible assistant text out of a Claude Code stream-json line.
  *
  * The stream-json format wraps the raw Anthropic SDK events. We want the
- * incremental text deltas the assistant is speaking, not the tool calls or
- * metadata.
+ * incremental text deltas the assistant is speaking, not tool results,
+ * system notices, or Claude Code's own "No response requested." acks.
  */
+const SYSTEM_NOISE = new Set([
+  "No response requested.",
+  "(no content)",
+]);
+
 function extractTextChunk(obj) {
   if (!obj || typeof obj !== "object") return null;
+
+  // Ignore system / result envelopes entirely. Claude Code emits its
+  // own "No response requested." result line for some stream-json
+  // events — forwarding that to the client as assistant text reads
+  // to the user as if iris is saying "no response requested".
+  if (obj.type === "system" || obj.type === "result") return null;
+  if (obj.subtype === "init" || obj.subtype === "result") return null;
 
   // Top-level {type: "assistant", message: {content: [{type: "text", text: "..."}]}}
   if (obj.type === "assistant" && obj.message?.content) {
     const parts = obj.message.content
       .filter((c) => c.type === "text" && c.text)
       .map((c) => c.text);
-    return parts.join("") || null;
+    const joined = parts.join("");
+    if (!joined || SYSTEM_NOISE.has(joined.trim())) return null;
+    return joined;
   }
 
   // Streaming delta {type: "content_block_delta", delta: {type: "text_delta", text: "..."}}
   if (obj.type === "content_block_delta" && obj.delta?.type === "text_delta") {
-    return obj.delta.text || null;
+    const t = obj.delta.text;
+    if (!t || SYSTEM_NOISE.has(t.trim())) return null;
+    return t;
   }
 
   return null;
