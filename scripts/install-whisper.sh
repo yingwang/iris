@@ -23,18 +23,19 @@ cmake -B build -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=OFF -DGGML_BLAS=ON
 echo "==> building"
 cmake --build build -j 4 --config Release
 
-if [ ! -f "models/ggml-base.bin" ]; then
-  echo "==> downloading ggml-base model (~142 MB)"
-  sh ./models/download-ggml-model.sh base
+if [ ! -f "models/ggml-small-q5_1.bin" ]; then
+  echo "==> downloading ggml-small-q5_1 model (~181 MB)"
+  sh ./models/download-ggml-model.sh small-q5_1
 fi
 
 echo
 echo "whisper.cpp ready."
 echo "  binary: $WHISPER_DIR/build/bin/whisper-cli"
-echo "  model:  $WHISPER_DIR/models/ggml-base.bin"
+echo "  model:  $WHISPER_DIR/models/ggml-small-q5_1.bin"
 echo
-echo "iris uses base.bin by default (~2s per turn on CPU, solid"
-echo "Mandarin + English accuracy). For lower latency with English"
-echo "only, also run:"
-echo "  sh $WHISPER_DIR/models/download-ggml-model.sh tiny"
-echo "and set IRIS_WHISPER_MODEL to the tiny path."
+echo "iris uses small-q5_1 by default (~3s per turn on CPU, strong"
+echo "Mandarin + English accuracy). For lower latency, also run one"
+echo "of the smaller models:"
+echo "  sh $WHISPER_DIR/models/download-ggml-model.sh base   # ~2s"
+echo "  sh $WHISPER_DIR/models/download-ggml-model.sh tiny   # ~0.9s"
+echo "and set IRIS_WHISPER_MODEL to the chosen path."

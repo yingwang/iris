@@ -17,14 +17,17 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WHISPER_ROOT = join(__dirname, "..", "scripts", "whisper.cpp");
 const WHISPER_BIN = join(WHISPER_ROOT, "build", "bin", "whisper-cli");
-// Default to base (multilingual, 142 MB) for ~2 s transcription on
-// CPU. tiny.bin is ~2x faster but measurably worse on Mandarin —
-// short utterances come back with wrong characters or get mis-IDed
-// as Thai / Arabic often enough to matter. Set IRIS_WHISPER_MODEL to
-// ggml-tiny.bin if you need the lower latency and are only speaking
-// English, or to an absolute path for a larger model.
+// Default to small-q5_1 (multilingual, ~181 MB, quantized from the
+// 466 MB small fp16 model with negligible quality loss). Roughly
+// ~3 s per short utterance on CPU and meaningfully better on
+// Mandarin than base.bin — base tends to confuse similar-sounding
+// characters and occasionally mis-ID short CJK clips as Thai or
+// Arabic. Set IRIS_WHISPER_MODEL to ggml-base.bin (~2 s) or
+// ggml-tiny.bin (~0.9 s) for lower latency, or point it at an
+// absolute path for a bigger model.
 const WHISPER_MODEL =
-  process.env.IRIS_WHISPER_MODEL || join(WHISPER_ROOT, "models", "ggml-base.bin");
+  process.env.IRIS_WHISPER_MODEL ||
+  join(WHISPER_ROOT, "models", "ggml-small-q5_1.bin");
 
 /**
  * Transcribe a WAV buffer. Returns the transcription as a single string,
