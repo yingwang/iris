@@ -131,6 +131,36 @@ setInterval(() => {
   }
 }, 300);
 
+// WebAudio playback: reliable. We route through an AnalyserNode so we
+// can read RMS for lip-sync. The analyser is shared across sentences
+// so the rAF loop keeps running smoothly between queue items.
+let ttsAnalyser = null;
+let ttsLipSyncRAF = null;
+
+function startLipSyncLoop() {
+  if (ttsLipSyncRAF || !ttsAnalyser || !avatarStage) return;
+  const data = new Uint8Array(ttsAnalyser.fftSize);
+  const loop = () => {
+    if (!playing) {
+      avatarStage?.setMouthOpen(0);
+      ttsLipSyncRAF = null;
+      return;
+    }
+    if (ttsAnalyser) {
+      ttsAnalyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / data.length);
+      avatarStage.setMouthOpen(Math.min(1, rms * 4.5));
+    }
+    ttsLipSyncRAF = requestAnimationFrame(loop);
+  };
+  ttsLipSyncRAF = requestAnimationFrame(loop);
+}
+
 async function pumpPlayQueue() {
   if (playing) return;
   playing = true;
@@ -138,46 +168,39 @@ async function pumpPlayQueue() {
   // Mute mic while iris is talking so she doesn't hear herself.
   if (vadRecorder) vadRecorder.pause();
 
+  const ctx = ensureAudioCtx();
+  if (ctx.state === "suspended") {
+    try { await ctx.resume(); } catch {}
+  }
+  if (!ttsAnalyser) {
+    ttsAnalyser = ctx.createAnalyser();
+    ttsAnalyser.fftSize = 1024;
+    ttsAnalyser.connect(ctx.destination);
+  }
+  startLipSyncLoop();
+
   while (playQueue.length > 0) {
     const ab = playQueue.shift();
-    const blob = new Blob([ab], { type: "audio/wav" });
     try {
-      // Prefer Live2D's built-in speak(): it plays audio AND drives
-      // the mouth at the Cubism engine level, which plays nicer with
-      // the motion manager than overwriting ParamMouthOpenY from an
-      // outside ticker.
-      if (avatarStage?.ready) {
-        await avatarStage.speak(blob);
-      } else {
-        await playBlobViaWebAudio(blob);
-      }
+      const buffer = await ctx.decodeAudioData(ab.slice(0));
+      await new Promise((resolve) => {
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        src.connect(ttsAnalyser);
+        src.onended = resolve;
+        src.start();
+      });
     } catch (err) {
-      console.warn("tts playback failed:", err);
+      console.warn("tts decode/play failed:", err);
     }
   }
 
   playing = false;
   ttsSpeaking = false;
-  // Give speakers a beat to settle, then unmute.
+  avatarStage?.setMouthOpen(0);
   setTimeout(() => {
     if (vadRecorder) vadRecorder.resume();
   }, 300);
-}
-
-async function playBlobViaWebAudio(blob) {
-  const ctx = ensureAudioCtx();
-  if (ctx.state === "suspended") {
-    try { await ctx.resume(); } catch {}
-  }
-  const ab = await blob.arrayBuffer();
-  const buffer = await ctx.decodeAudioData(ab);
-  await new Promise((resolve) => {
-    const src = ctx.createBufferSource();
-    src.buffer = buffer;
-    src.connect(ctx.destination);
-    src.onended = resolve;
-    src.start();
-  });
 }
 
 function appendBubble(role, text) {

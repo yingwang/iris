@@ -13,12 +13,11 @@
  * MODEL_URL at /models/your-model/your-model.model3.json.
  */
 
-// Mark — the male business-attire sample from Live2D's official Cubism
-// Web samples. He has an idle motion group and the standard parameter
-// ids (ParamMouthOpenY, ParamMouthForm, eye/brow params) so all the
-// wiring below Just Works without a per-model mapping.
+// Haru — female Cubism 4 sample from pixi-live2d-display's test assets.
+// Reverted from Mark after a test showed audio wasn't playing through
+// Mark via model.speak(). Haru was known-working in the earlier build.
 const MODEL_URL =
-  "https://cdn.jsdelivr.net/gh/Live2D/CubismWebSamples/Samples/Resources/Mark/Mark.model3.json";
+  "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json";
 
 export class AvatarStage {
   constructor(canvasEl) {
