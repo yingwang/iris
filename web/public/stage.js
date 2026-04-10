@@ -54,9 +54,26 @@ export class AvatarStage {
 
     this.app.stage.addChild(this.model);
 
-    // Fit to canvas
+    // Cache the model's intrinsic size before we touch its scale.
+    // pixi-live2d-display's .width / .height return the current
+    // rendered size (post-scale), so if we compute a new scale using
+    // those values we're chaining scales and the avatar snowballs
+    // every time the stage reflows. We capture the initial unscaled
+    // footprint once and always fit relative to that.
+    this.baseWidth = this.model.width;
+    this.baseHeight = this.model.height;
+
+    // Fit to canvas, and re-fit whenever the stage element changes
+    // size — not just on window resize, because the grid cell can
+    // reflow for tab moves, devtools toggles, etc.
     this.fitModel();
-    window.addEventListener("resize", () => this.fitModel());
+    const parent = this.canvasEl.parentElement;
+    if ("ResizeObserver" in window && parent) {
+      this.resizeObserver = new ResizeObserver(() => this.fitModel());
+      this.resizeObserver.observe(parent);
+    } else {
+      window.addEventListener("resize", () => this.fitModel());
+    }
 
     // Let the avatar track the mouse/center so there's subtle head and
     // eye movement even when idle.
@@ -91,12 +108,17 @@ export class AvatarStage {
   fitModel() {
     if (!this.model || !this.app) return;
     const { width, height } = this.app.renderer.screen;
-    const scale = Math.min(width / this.model.width, height / this.model.height) * 0.9;
+    if (!width || !height) return;
+    // Compute scale against the cached unscaled footprint, so
+    // repeated fits on reflow are idempotent.
+    const scale =
+      Math.min(width / this.baseWidth, height / this.baseHeight) * 0.9;
     this.model.scale.set(scale);
-    this.model.x = width / 2 - (this.model.width / 2);
-    this.model.y = height / 2 - (this.model.height / 2);
-    // Slight vertical bias so the character isn't centered on the chest.
-    this.model.y -= height * 0.05;
+    // Center using the now-scaled width/height (which match base*scale).
+    const scaledW = this.baseWidth * scale;
+    const scaledH = this.baseHeight * scale;
+    this.model.x = (width - scaledW) / 2;
+    this.model.y = (height - scaledH) / 2 - height * 0.05;
   }
 
   tick() {
