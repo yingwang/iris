@@ -33,10 +33,11 @@ const MALE_VOICE_EN = process.env.IRIS_VOICE_EN_M || "en-US-AndrewNeural";
 const MALE_VOICE_ZH = process.env.IRIS_VOICE_ZH_M || "zh-CN-YunxiNeural";
 
 // Speaking speed in percent relative to the voice's natural pace.
-// edge-tts accepts -50..+50. +20 is about 1.2x and still sounds
-// natural on the Ava / Xiaoxiao voices; higher values start to feel
-// rushed on Chinese tones.
-const DEFAULT_RATE = Number(process.env.IRIS_TTS_RATE ?? 20);
+// edge-tts accepts -50..+50. 0 is the voice's natural "1x" pace;
+// +50 is the max before tones start to distort on Chinese voices.
+// The default is the voice's natural rate — the UI dropdown lets
+// the user push it up to Fast (+25) or Turbo (+50) per taste.
+const DEFAULT_RATE = Number(process.env.IRIS_TTS_RATE ?? 0);
 
 /**
  * Pick the right edge-tts voice name for a (language, gender) pair.

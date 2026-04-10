@@ -54,8 +54,18 @@ personaSel.addEventListener("change", () => {
   avatarStage?.setPersona(personaSel.value);
 });
 
+// Accept any previously stored rate only if it still matches one of
+// the dropdown options — otherwise fall back to the default (Normal
+// = 1.0x). This migrates users who had the old "+20" Normal saved.
 const savedRate = localStorage.getItem(RATE_STORAGE_KEY);
-if (savedRate != null) rateSel.value = savedRate;
+if (savedRate != null) {
+  const options = Array.from(rateSel.options).map((o) => o.value);
+  if (options.includes(savedRate)) {
+    rateSel.value = savedRate;
+  } else {
+    localStorage.removeItem(RATE_STORAGE_KEY);
+  }
+}
 rateSel.addEventListener("change", () => {
   localStorage.setItem(RATE_STORAGE_KEY, rateSel.value);
   pushConfig();
