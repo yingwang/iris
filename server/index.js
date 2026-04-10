@@ -116,16 +116,29 @@ app.get("/ws", { websocket: true }, (socket, req) => {
     let buffer = "";
     let full = "";
 
+    // Minimum chars before we'll flush on a weak boundary (comma).
+    // Keeps us from shipping 2-character TTS chunks while Claude is
+    // still writing.
+    const MIN_COMMA_FLUSH = 12;
     const flush = async (force = false) => {
       if (!buffer.trim()) return;
-      // Sentence-ish boundary: prefer breaking on punctuation, but if
-      // `force`, flush whatever is left.
       let cut = buffer.length;
       if (!force) {
-        const m = buffer.match(/[。！？!?.;:]\s*/g);
-        if (!m) return; // no sentence boundary yet, wait for more
-        const last = buffer.lastIndexOf(m[m.length - 1]);
-        cut = last + m[m.length - 1].length;
+        // Prefer strong sentence terminators (. ! ? 。 ！ ？) if any.
+        const strong = buffer.match(/[。！？!?]\s*/g);
+        if (strong) {
+          const last = buffer.lastIndexOf(strong[strong.length - 1]);
+          cut = last + strong[strong.length - 1].length;
+        } else if (buffer.length >= MIN_COMMA_FLUSH) {
+          // Fall back to commas / semicolons for lower latency: ship
+          // the first phrase immediately while Claude keeps typing.
+          const weak = buffer.match(/[，,;:]\s*/g);
+          if (!weak) return;
+          const last = buffer.lastIndexOf(weak[weak.length - 1]);
+          cut = last + weak[weak.length - 1].length;
+        } else {
+          return;
+        }
       }
       const piece = buffer.slice(0, cut).trim();
       buffer = buffer.slice(cut);

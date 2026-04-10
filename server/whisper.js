@@ -17,7 +17,11 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WHISPER_ROOT = join(__dirname, "..", "scripts", "whisper.cpp");
 const WHISPER_BIN = join(WHISPER_ROOT, "build", "bin", "whisper-cli");
-const WHISPER_MODEL = join(WHISPER_ROOT, "models", "ggml-base.bin");
+// Default to tiny (multilingual, 75 MB) for ~0.9 s transcription of a
+// short utterance on CPU. Swap in ggml-base.bin for better accuracy
+// at ~2 s per turn, or set IRIS_WHISPER_MODEL to an absolute path.
+const WHISPER_MODEL =
+  process.env.IRIS_WHISPER_MODEL || join(WHISPER_ROOT, "models", "ggml-tiny.bin");
 
 /**
  * Transcribe a WAV buffer. Returns the transcription as a single string,
