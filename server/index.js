@@ -34,7 +34,12 @@ import {
   writeSessionId,
 } from "./claude.js";
 import { transcribe, whisperAvailable, paraformerAvailable } from "./stt.js";
-import { synthesize, guessLanguage } from "./tts.js";
+import {
+  synthesize,
+  guessLanguage,
+  VOICE_PRESETS,
+  DEFAULT_PRESET,
+} from "./tts.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3000);
@@ -209,10 +214,20 @@ await app.register(fastifyStatic, {
 //   /api/session/reset    POST — generate a new session id, forgetting history
 
 app.get("/api/config", async () => {
+  // Project preset metadata to the client in a UI-friendly shape:
+  // id, label, and gender (so the client can decide which avatar
+  // to load when the preset changes).
+  const presets = Object.entries(VOICE_PRESETS).map(([id, cfg]) => ({
+    id,
+    label: cfg.label,
+    gender: cfg.gender,
+  }));
   return {
     persona: readPersona(),
     memory: readMemory(),
     sessionId: readSessionId(),
+    presets,
+    defaultPreset: DEFAULT_PRESET,
     // Avatar model URLs, overridable via env so the user can drop
     // in a custom Cubism 4 model (for example a 古风 Chinese
     // character from a community marketplace) without touching any
@@ -265,12 +280,11 @@ app.get("/ws", { websocket: true }, (socket, req) => {
   const session = new ClaudeSession();
   app.log.info({ sessionId: session.sessionId }, "client connected");
 
-  // Per-connection voice preferences. Sent by the client either on
-  // connect (future: a config message) or alongside each user turn.
-  // gender switches between the female "Iris" voice set and the male
-  // companion voice set; rate is the edge-tts speed offset in
-  // percent (-50..+50).
-  const voicePrefs = { gender: "female", rate: null };
+  // Per-connection voice preferences. Sent by the client on connect
+  // and whenever the user changes a dropdown. `preset` is one of
+  // VOICE_PRESETS (e.g. "female-xiaoxiao", "male-yunze"), `rate` is
+  // the edge-tts speed offset in percent (-50..+50).
+  const voicePrefs = { preset: DEFAULT_PRESET, rate: null };
 
   const send = (obj) => socket.send(JSON.stringify(obj));
 
@@ -335,7 +349,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       try {
         const wav = await synthesize(speakable, {
           language: guessLanguage(speakable),
-          gender: voicePrefs.gender,
+          preset: voicePrefs.preset,
           ...(voicePrefs.rate != null ? { rate: voicePrefs.rate } : {}),
         });
         if (isInterrupted()) return; // user started talking while TTS was synthesizing
@@ -418,8 +432,14 @@ app.get("/ws", { websocket: true }, (socket, req) => {
     // the user changes a dropdown. Survives for the lifetime of the
     // websocket connection.
     if (msg.type === "config") {
-      if (msg.gender === "male" || msg.gender === "female") {
-        voicePrefs.gender = msg.gender;
+      if (typeof msg.preset === "string" && VOICE_PRESETS[msg.preset]) {
+        voicePrefs.preset = msg.preset;
+        // Tell the Claude session about the preset change so the
+        // embodiment block (and therefore Claude's self-image) gets
+        // updated. setPreset() is a no-op if the preset didn't
+        // actually change, otherwise it resets the session so the
+        // new prompt takes effect on the next turn.
+        session.setPreset(msg.preset);
       }
       if (typeof msg.rate === "number") {
         voicePrefs.rate = Math.max(-50, Math.min(50, Math.round(msg.rate)));

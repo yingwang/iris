@@ -25,10 +25,12 @@
 
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { VOICE_PRESETS, DEFAULT_PRESET } from "./tts.js";
 
 /**
  * Cross-session event bus. The HTTP settings endpoints emit events
@@ -55,6 +57,13 @@ const PERSONA_DEFAULT_PATH = join(REPO_ROOT, "persona.default.md");
 const MEMORY_DEFAULT_PATH = join(REPO_ROOT, "memory.default.md");
 const SESSION_DIR = join(REPO_ROOT, ".iris");
 const SESSION_ID_PATH = join(SESSION_DIR, "session-id");
+// Metadata about the currently-persisted session: the sessionId,
+// the hash of the system prompt that was baked into it, and the
+// voice preset it was created for. On boot we only --resume that
+// session if the current prompt still hashes the same; otherwise
+// we generate a new id so the updated persona / memory / embodiment
+// actually reaches Claude.
+const SESSION_META_PATH = join(SESSION_DIR, "session-meta.json");
 
 /**
  * Default persona block — used when persona.md doesn't exist. This
@@ -236,39 +245,105 @@ content of the current turn's chitchat or ephemeral task state.
 ${mem}`;
 }
 
-/** Compose the final system prompt from persona + rules + memory. */
-function buildSystemPrompt() {
+/**
+ * Build the "embodiment" block that tells Claude which body / voice
+ * she's currently inhabiting. This is what lets a preset change like
+ * female → male take effect without the user having to explain it.
+ */
+function buildEmbodimentBlock(preset) {
+  const cfg = VOICE_PRESETS[preset] || VOICE_PRESETS[DEFAULT_PRESET];
+  if (!cfg) return "";
+  const genderWord = cfg.gender === "male" ? "male" : "female";
+  const pronouns =
+    cfg.gender === "male"
+      ? "he / him / his (in English) or 他 (in Chinese)"
+      : "she / her / hers (in English) or 她 (in Chinese)";
+  return `
+
+EMBODIMENT: You are currently speaking with a ${genderWord} voice and appearing as a
+${genderWord} Live2D avatar. The user can switch your voice and avatar at any time via
+the UI. Right now the selected preset is "${cfg.label}". Use ${pronouns} when referring
+to yourself. Let this shape your tone and self-reference — inhabit the body you're in
+without narrating the setting. If the user switches your preset mid-conversation you'll
+get a fresh session with a new prompt, so you never need to "change" gender within a
+single conversation.`;
+}
+
+/** Compose the final system prompt from persona + rules + embodiment + memory. */
+function buildSystemPrompt(preset = DEFAULT_PRESET) {
   return `${readPersona()}
 
-${RULES}${buildMemoryBlock()}`;
+${RULES}${buildEmbodimentBlock(preset)}${buildMemoryBlock()}`;
+}
+
+/** SHA-256 over the system prompt, truncated — used as a session cache key. */
+function hashPrompt(prompt) {
+  return createHash("sha256").update(prompt, "utf8").digest("hex").slice(0, 16);
 }
 
 /**
- * Read the persistent session id from .iris/session-id, if it exists
- * and looks like a UUID. Returns null on any problem so the caller
- * falls back to a fresh uuid.
+ * Read the persistent session metadata — session id, the hash of the
+ * prompt baked in when it was created, and the voice preset it was
+ * created for. Falls back to the older bare-session-id format for
+ * back-compat, returning a meta record with the hash set to null so
+ * the caller knows to discard it.
  */
-function loadPersistedSessionId() {
+function loadPersistedSessionMeta() {
   try {
-    if (!existsSync(SESSION_ID_PATH)) return null;
-    const id = readFileSync(SESSION_ID_PATH, "utf8").trim();
-    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-      return id;
+    if (existsSync(SESSION_META_PATH)) {
+      const data = JSON.parse(readFileSync(SESSION_META_PATH, "utf8"));
+      if (
+        data.sessionId &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          data.sessionId
+        )
+      ) {
+        return data;
+      }
+    }
+    // Legacy: pre-hash sessions stored just the raw uuid. We still
+    // honour the id but force a reset below because we can't verify
+    // the prompt hasn't changed since it was created.
+    if (existsSync(SESSION_ID_PATH)) {
+      const id = readFileSync(SESSION_ID_PATH, "utf8").trim();
+      if (
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          id
+        )
+      ) {
+        return { sessionId: id, promptHash: null, preset: null };
+      }
     }
   } catch {}
   return null;
 }
 
-function persistSessionId(id) {
+/** Legacy accessor — only returns the id, nothing else. */
+function loadPersistedSessionId() {
+  return loadPersistedSessionMeta()?.sessionId || null;
+}
+
+function persistSessionMeta(sessionId, promptHash, preset) {
   try {
     if (!existsSync(SESSION_DIR)) mkdirSync(SESSION_DIR, { recursive: true });
-    writeFileSync(SESSION_ID_PATH, id + "\n", "utf8");
+    writeFileSync(
+      SESSION_META_PATH,
+      JSON.stringify({ sessionId, promptHash, preset }, null, 2) + "\n",
+      "utf8"
+    );
+    // Keep the legacy file in sync for any older tooling that reads it.
+    writeFileSync(SESSION_ID_PATH, sessionId + "\n", "utf8");
   } catch (err) {
-    // Non-fatal: session continuity is a nice-to-have, not a
-    // requirement. If the filesystem is read-only we just lose
-    // memory across restarts.
-    console.warn("failed to persist session id:", err.message);
+    console.warn("failed to persist session meta:", err.message);
   }
+}
+
+function persistSessionId(id) {
+  // Back-compat wrapper: called from places that don't know the
+  // hash/preset yet (for example a manual "new session" click). Stores
+  // the id alongside null metadata so the next boot treats it as
+  // legacy and revalidates.
+  persistSessionMeta(id, null, null);
 }
 
 // Default to Sonnet — noticeably faster than Opus for the same chat
@@ -277,16 +352,43 @@ function persistSessionId(id) {
 const DEFAULT_MODEL = process.env.IRIS_CLAUDE_MODEL || "sonnet";
 
 export class ClaudeSession {
-  constructor({ sessionId, systemPrompt, model } = {}) {
-    // Session id priority: caller override > persisted on disk > fresh
-    // uuid. Persisting across restarts means iris "remembers" the
-    // conversation — Claude Code's --resume replays full history.
-    const persisted = loadPersistedSessionId();
-    this.sessionId = sessionId ?? persisted ?? randomUUID();
-    this.isResumed = sessionId == null && persisted != null;
-    if (!persisted && !sessionId) persistSessionId(this.sessionId);
-    this.systemPrompt = systemPrompt ?? buildSystemPrompt();
+  constructor({ sessionId, systemPrompt, model, preset } = {}) {
+    this.preset = preset ?? DEFAULT_PRESET;
+    this.systemPrompt = systemPrompt ?? buildSystemPrompt(this.preset);
     this.model = model ?? DEFAULT_MODEL;
+
+    const currentHash = hashPrompt(this.systemPrompt);
+
+    // Session id priority:
+    //   1. Explicit caller override (rare; used by tests).
+    //   2. Persisted session whose prompt hash AND preset still match
+    //      the current configuration. That's the "continue the
+    //      conversation you were having" path.
+    //   3. Fresh uuid. Triggered when persona.md / memory.md has been
+    //      edited since the session was created, or when the voice
+    //      preset (and therefore the embodiment block) has changed.
+    //
+    // The hash check is what fixes the "first turn doesn't know her
+    // role" bug: before, we'd always --resume the old session and
+    // replay the old system prompt, completely ignoring any
+    // persona.md edits. Now a changed prompt forces a fresh session.
+    const persisted = loadPersistedSessionMeta();
+    const canResume =
+      persisted &&
+      persisted.promptHash === currentHash &&
+      persisted.preset === this.preset;
+
+    if (sessionId) {
+      this.sessionId = sessionId;
+      this.isResumed = false;
+    } else if (canResume) {
+      this.sessionId = persisted.sessionId;
+      this.isResumed = true;
+    } else {
+      this.sessionId = randomUUID();
+      this.isResumed = false;
+      persistSessionMeta(this.sessionId, currentHash, this.preset);
+    }
     this.child = null;
     // Incremented every time we spawn a fresh subprocess. Used to
     // track whether --session-id (first spawn, creates the session)
@@ -327,12 +429,13 @@ export class ClaudeSession {
   /**
    * Start a completely fresh conversation. Kills the current
    * subprocess, generates a new session id, and rebuilds the system
-   * prompt from the current persona.md / memory.md. The next send()
-   * will cold-spawn with the new prompt.
+   * prompt from the current persona.md / memory.md / embodiment. The
+   * next send() will cold-spawn with the new prompt.
    *
-   * Used when persona.md changes mid-conversation: the old system
-   * prompt is frozen inside Claude's session log, so the only way
-   * to make a new persona take effect is to start over.
+   * Used when persona.md changes mid-conversation or when the voice
+   * preset changes — the old system prompt is frozen inside Claude's
+   * session log, so the only way to make the change take effect is
+   * to start over.
    */
   resetSession() {
     try {
@@ -342,9 +445,27 @@ export class ClaudeSession {
     this.sessionId = randomUUID();
     this.isResumed = false;
     this.spawnCount = 0;
-    this.systemPrompt = buildSystemPrompt();
+    this.systemPrompt = buildSystemPrompt(this.preset);
     this.pendingMemoryNote = false;
-    persistSessionId(this.sessionId);
+    persistSessionMeta(
+      this.sessionId,
+      hashPrompt(this.systemPrompt),
+      this.preset
+    );
+  }
+
+  /**
+   * Switch to a different voice preset. If the new preset actually
+   * changes the embodiment block (i.e. different gender or label),
+   * this triggers a full session reset so the new self-description
+   * reaches Claude. Called from the WebSocket "config" handler when
+   * the user picks a different voice in the dropdown.
+   */
+  setPreset(newPreset) {
+    if (!newPreset || newPreset === this.preset) return;
+    if (!VOICE_PRESETS[newPreset]) return;
+    this.preset = newPreset;
+    this.resetSession();
   }
 
   /**

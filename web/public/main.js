@@ -32,8 +32,12 @@ const faceDebugEl = document.getElementById("face-debug");
 // pushed to the server on connect and any time they change.
 
 const LANG_STORAGE_KEY = "iris.sttLanguage";
-const PERSONA_STORAGE_KEY = "iris.persona";
+const PRESET_STORAGE_KEY = "iris.voicePreset";
 const RATE_STORAGE_KEY = "iris.ttsRate";
+
+// Preset metadata lookup table, populated from /api/config on boot.
+// Shape: { "female-xiaoxiao": { gender: "female", label: "她 · 温柔" }, ... }
+const presetInfo = {};
 
 const savedLang = localStorage.getItem(LANG_STORAGE_KEY);
 if (savedLang && ["auto", "en", "zh"].includes(savedLang)) {
@@ -43,15 +47,65 @@ langSel.addEventListener("change", () => {
   localStorage.setItem(LANG_STORAGE_KEY, langSel.value);
 });
 
-const savedPersona = localStorage.getItem(PERSONA_STORAGE_KEY);
-if (savedPersona && ["female", "male"].includes(savedPersona)) {
-  personaSel.value = savedPersona;
+/**
+ * Fetch the list of voice presets from the server and build the
+ * persona dropdown. Presets are grouped into optgroups by gender.
+ * Restores the previously-saved selection if it's still in the list,
+ * otherwise uses the server default.
+ */
+async function populatePresetDropdown() {
+  let data;
+  try {
+    const r = await fetch("/api/config");
+    if (!r.ok) throw new Error(String(r.status));
+    data = await r.json();
+  } catch (err) {
+    console.warn("failed to load presets:", err);
+    return;
+  }
+  const presets = data.presets || [];
+  const groups = { female: [], male: [] };
+  for (const p of presets) {
+    presetInfo[p.id] = { gender: p.gender, label: p.label };
+    (groups[p.gender] || (groups.other = [])).push(p);
+  }
+  personaSel.innerHTML = "";
+  for (const [gender, label] of [["female", "女声"], ["male", "男声"]]) {
+    if (!groups[gender]?.length) continue;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    for (const p of groups[gender]) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.label;
+      group.appendChild(opt);
+    }
+    personaSel.appendChild(group);
+  }
+
+  // Restore saved preset if it's still valid; otherwise migrate
+  // legacy "female"/"male" values or fall back to server default.
+  const saved = localStorage.getItem(PRESET_STORAGE_KEY);
+  if (saved && presetInfo[saved]) {
+    personaSel.value = saved;
+  } else {
+    const fallback =
+      saved === "male" ? "male-yunxi" :
+      saved === "female" ? "female-xiaoxiao" :
+      data.defaultPreset;
+    if (fallback && presetInfo[fallback]) {
+      personaSel.value = fallback;
+      localStorage.setItem(PRESET_STORAGE_KEY, fallback);
+    }
+  }
 }
+
 personaSel.addEventListener("change", () => {
-  localStorage.setItem(PERSONA_STORAGE_KEY, personaSel.value);
+  localStorage.setItem(PRESET_STORAGE_KEY, personaSel.value);
   pushConfig();
-  // Swap Live2D model in place — no page reload.
-  avatarStage?.setPersona(personaSel.value);
+  // Swap Live2D model in place — derive gender from preset metadata.
+  const gender = presetInfo[personaSel.value]?.gender || "female";
+  avatarStage?.setPersona(gender);
 });
 
 // Accept any previously stored rate only if it still matches one of
@@ -76,7 +130,7 @@ function pushConfig() {
   ws.send(
     JSON.stringify({
       type: "config",
-      gender: personaSel.value,
+      preset: personaSel.value,
       rate: Number(rateSel.value),
     })
   );
@@ -567,8 +621,11 @@ async function initAvatar() {
         };
       }
     } catch {}
+    // Derive avatar gender from the selected voice preset. The
+    // preset metadata is populated earlier by populatePresetDropdown.
+    const initialGender = presetInfo[personaSel.value]?.gender || "female";
     avatarStage = new AvatarStage(avatarCanvas, {
-      persona: personaSel.value,
+      persona: initialGender,
       modelOverrides: overrides,
     });
     await avatarStage.init();
@@ -580,6 +637,12 @@ async function initAvatar() {
 }
 
 // --- boot ---------------------------------------------------------------
+
+// Populate the voice preset dropdown first — initAvatar() and the
+// WebSocket config push both depend on having the preset metadata
+// loaded. Once that's done, kick off the rest of the boot in
+// parallel.
+await populatePresetDropdown();
 
 connect();
 initFace();

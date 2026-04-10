@@ -21,35 +21,92 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 
-// Female voice set — the default "Iris" persona. Ava + Xiaoxiao are
-// the most natural edge-tts neural voices for en/zh.
-const FEMALE_VOICE_EN = process.env.IRIS_VOICE_EN || "en-US-AvaNeural";
-const FEMALE_VOICE_ZH = process.env.IRIS_VOICE_ZH || "zh-CN-XiaoxiaoNeural";
+/**
+ * Voice presets — the public vocabulary of picks the UI exposes.
+ * Each preset pairs an English voice with a Chinese voice and carries
+ * a gender tag so the browser can decide which Live2D avatar to load.
+ *
+ * The Chinese voices are the interesting axis — English stays on a
+ * single "natural conversational" neural voice per gender because
+ * varying it adds noise without meaningfully changing the character.
+ *
+ * IDs are stable, so they're safe to persist in localStorage.
+ */
+export const VOICE_PRESETS = {
+  // Female presets — all use Ava (en-US, most natural conversational
+  // female) and rotate through four Chinese voices with distinct
+  // personalities.
+  "female-xiaoxiao": {
+    gender: "female",
+    label: "她 · 温柔",
+    en: "en-US-AvaNeural",
+    zh: "zh-CN-XiaoxiaoNeural",
+  },
+  "female-xiaoyi": {
+    gender: "female",
+    label: "她 · 甜美",
+    en: "en-US-AvaNeural",
+    zh: "zh-CN-XiaoyiNeural",
+  },
+  "female-xiaohan": {
+    gender: "female",
+    label: "她 · 知性",
+    en: "en-US-AvaNeural",
+    zh: "zh-CN-XiaohanNeural",
+  },
+  "female-xiaomo": {
+    gender: "female",
+    label: "她 · 亲切",
+    en: "en-US-AvaNeural",
+    zh: "zh-CN-XiaomoNeural",
+  },
 
-// Male voice set — used when the UI asks for a male companion. Andrew
-// is the most natural en-US male in edge-tts; Yunxi is the warm /
-// friendly Chinese male voice (Yunyang is more newsreader-y).
-const MALE_VOICE_EN = process.env.IRIS_VOICE_EN_M || "en-US-AndrewNeural";
-const MALE_VOICE_ZH = process.env.IRIS_VOICE_ZH_M || "zh-CN-YunxiNeural";
+  // Male presets — all use Andrew (en-US) and rotate Chinese voices.
+  // "少年" uses the Taiwan zh-TW-ZhiweiNeural voice, which has a
+  // softer and more literary quality than the mainland zh-CN male
+  // voices — closest thing edge-tts has to a 古风 young-scholar feel.
+  "male-yunxi": {
+    gender: "male",
+    label: "他 · 温柔",
+    en: "en-US-AndrewNeural",
+    zh: "zh-CN-YunxiNeural",
+  },
+  "male-yunze": {
+    gender: "male",
+    label: "他 · 沉稳",
+    en: "en-US-AndrewNeural",
+    zh: "zh-CN-YunzeNeural",
+  },
+  "male-zhiwei": {
+    gender: "male",
+    label: "他 · 少年 (台)",
+    en: "en-US-AndrewNeural",
+    zh: "zh-TW-ZhiweiNeural",
+  },
+  "male-yunyang": {
+    gender: "male",
+    label: "他 · 正式",
+    en: "en-US-AndrewNeural",
+    zh: "zh-CN-YunyangNeural",
+  },
+};
+
+export const DEFAULT_PRESET = process.env.IRIS_VOICE_PRESET || "female-xiaoxiao";
 
 // Speaking speed in percent relative to the voice's natural pace.
 // edge-tts accepts -50..+50. 0 is the voice's natural "1x" pace;
 // +50 is the max before tones start to distort on Chinese voices.
-// The default is the voice's natural rate — the UI dropdown lets
-// the user push it up to Fast (+25) or Turbo (+50) per taste.
 const DEFAULT_RATE = Number(process.env.IRIS_TTS_RATE ?? 0);
 
 /**
- * Pick the right edge-tts voice name for a (language, gender) pair.
- * Defaults to the female set since that's iris's original persona.
+ * Resolve a preset id to the edge-tts voice name for the given
+ * language. Falls back to the default preset if the id is unknown.
  */
-export function voiceFor(language, gender = "female") {
+export function voiceFor(language, preset = DEFAULT_PRESET) {
+  const cfg = VOICE_PRESETS[preset] || VOICE_PRESETS[DEFAULT_PRESET];
   const lang = (language || "en").toLowerCase();
   const isZh = lang === "zh" || lang === "zh-cn" || lang === "zh-tw";
-  if (gender === "male") {
-    return isZh ? MALE_VOICE_ZH : MALE_VOICE_EN;
-  }
-  return isZh ? FEMALE_VOICE_ZH : FEMALE_VOICE_EN;
+  return isZh ? cfg.zh : cfg.en;
 }
 
 let cachedBin = null;
@@ -94,14 +151,14 @@ async function findEdgeTtsBin() {
  */
 export async function synthesize(
   text,
-  { language, voice, gender = "female", rate = DEFAULT_RATE } = {}
+  { language, voice, preset = DEFAULT_PRESET, rate = DEFAULT_RATE } = {}
 ) {
   if (!text || !text.trim()) return Buffer.alloc(0);
 
   const bin = await findEdgeTtsBin();
   const dir = await mkdtemp(join(tmpdir(), "iris-tts-"));
   const mp3Path = join(dir, "out.mp3");
-  const v = voice || voiceFor(language, gender);
+  const v = voice || voiceFor(language, preset);
 
   const args = [
     "--voice",
