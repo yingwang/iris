@@ -132,17 +132,17 @@ iris/
 
 ## 中文
 
-一个跑在浏览器里的语音 + 视频 AI 伙伴。Claude 当大脑，Live2D 当脸，实时对话 + 口型同步 + 面部追踪 + 长期记忆。你只管说话，它看得见你、听得见你、会开口回你。
+一个运行于浏览器中的语音 + 视频 AI 伙伴。以 Claude 为大脑，Live2D 为面孔，支持实时对话、口型同步、面部追踪与长期记忆。无需按键操作，只需开口说话——她便能看见你、听见你，并以自然的声音作答。
 
-### 能做什么
+### 功能概览
 
-- **持续语音对话** — Silero VAD 一直在听，不用按键说话。她说到一半你开口，她会立刻停下来。
-- **Live2D 虚拟形象** — 口型跟着 TTS 音频走，表情由 Claude 控制（通过 `<expr:happy>` 之类的内嵌标签），眼神追你的脸，说话时身子也会动。
-- **面部追踪** — MediaPipe 把你的表情提炼成自然语言提示喂给 Claude（`[用户刚从 neutral 变成 smiling]`），让她能对情绪变化做出反应。你走开或回来也会被检测到并触发简短的问候。
-- **持久化记忆** — 人设 + 长期事实都存在本地 markdown 文件里，直接编辑即可。她也能通过 `<remember>…</remember>` 标签在回复中自动把事实存进来。
-- **安静时主动搭话** — 超过 90 秒没说话，她会轻轻问一句。
-- **多模型切换** — UI 下拉选 Sonnet / Opus / Haiku，不需要 API key（走你本地登录的 `claude` CLI）。
-- **中英双语** — 每轮自动识别。中文走 Paraformer-zh 加速，其他语言走 whisper.cpp。
+- **持续语音对话**——Silero VAD 全程监听，无需按键。你在她回应途中开口，她会立即停顿，让位于你的发言。
+- **Live2D 虚拟形象**——口型与 TTS 音频同步，表情由 Claude 通过内嵌的 `<expr:happy>` 之类标签驱动；视线会跟随你的面部移动，言谈间身体亦有自然的动作。
+- **面部追踪**——MediaPipe 将你的表情转化为自然语言提示传给 Claude（如 `[用户刚从 neutral 变为 smiling]`），使她能够回应情绪的变化。你离开或重新出现在镜头前同样会被察觉，并触发一句简短的招呼。
+- **持久化记忆**——人设与长期事实均以本地 markdown 文件存放，可直接编辑。她亦能在回复中通过 `<remember>…</remember>` 标签自动追加新事实。
+- **静默时主动问候**——若超过 90 秒未开口，她会主动说一句轻语。
+- **多模型切换**——UI 下拉即可在 Sonnet / Opus / Haiku 之间切换，无需 API key，通过本地已登录的 `claude` CLI 调用你的订阅。
+- **中英双语**——逐轮自动识别。中文由 Paraformer-zh 加速，其他语言由 whisper.cpp 承担。
 
 ### 架构
 
@@ -150,73 +150,73 @@ iris/
 ┌─────────────── 浏览器 ───────────────┐         ┌──────── 服务端 ────────┐
 │ PIXI + pixi-live2d-display          │         │ Fastify + WebSocket    │
 │ MediaPipe Face Landmarker           │ ◄─ WS ─►│ 常驻 Claude CLI 子进程  │
-│ Silero VAD（常开麦克风）              │         │ whisper.cpp + Paraformer│
-│ Web Audio TTS 播放 + RMS 口型同步    │         │ edge-tts（Azure 神经音）│
+│ Silero VAD(常开麦克风)              │         │ whisper.cpp + Paraformer│
+│ Web Audio TTS 播放 + RMS 口型同步    │         │ edge-tts(Azure 神经音)  │
 └─────────────────────────────────────┘         └────────────────────────┘
 ```
 
-- **大脑**：Claude Code CLI 常驻 `--input-format stream-json` 模式，一个会话一个子进程，只有第一次交互承担冷启动成本。UI 里可切 `sonnet` / `opus` / `haiku`。走你本地登录的 Claude 订阅，不用 API key。
+- **大脑**：Claude Code CLI 以 `--input-format stream-json` 模式常驻，每个会话对应一个长期存活的子进程，仅首轮承担冷启动开销。UI 可切换 `sonnet` / `opus` / `haiku`，通过本地已登录的 Claude 订阅运行，无需 API key。
 - **STT**：
-  - **whisper.cpp**（`ggml-small-q5_1.bin`，~181 MB，CPU 下 ~3 秒/轮）—— 多语言，带一个严格的中英文字脚本校验器，识别错语言时自动重试。
-  - **Paraformer-zh** 通过 `sherpa-onnx-node`（~232 MB ONNX，~300–500 ms/轮）—— 当前最强的中文识别，选中"中文"时自动走这条路。原生 Node 插件，不需要 Python 辅助进程。
-- **TTS**：[edge-tts](https://github.com/rany2/edge-tts) —— 免费但需要联网。预设按"英 + 中"神经音配对（女声：Xiaoxiao / Xiaoyi / HsiaoYu；男声：Yunxi / Yunyang / Yunjian / YunJhe），语速和模型都在输入栏下拉里调。
-- **语音活动检测**：`@ricky0123/vad-web` 里的 Silero VAD，跑在 AudioWorklet 里。回复播放期间也保持监听以支持打断；TTS 开始后 1 秒的宽限期用来忽略回音泄漏。
-- **虚拟形象**：`pixi-live2d-display` 驱动 Live2D Cubism 4 模型。默认用 Haru（女）和 Natori / Mark（男），可通过环境变量换成自定义模型。Claude 发出的表情标签会映射到每个模型的情绪槽（Haru 的 `f01`–`f08`，Natori 的 `Smile` / `Angry` / `Sad` 等）。
-- **追踪**：MediaPipe Face Landmarker 每 2 秒左右跑一次推理，给出 52 个 blendshape + 鼻尖位置。快照作为自然语言前缀拼到每轮用户消息上；鼻尖位置同时驱动 Live2D 的 `model.focus`，让她的视线跟着你走。离开 / 回来会触发一段简短的问候。
-- **口型同步**：Web Audio 的 `AnalyserNode` 从 TTS 音频流读 RMS，每帧写 `ParamMouthOpenY` 并叠加 `ParamMouthForm`，让嘴巴的开合和形状都跟着音节走。Hook 点在 Cubism 的 `coreModel.update` 上，因为顶点烘焙发生在那一层——写在外层的 `internalModel.update` 上太晚了。
+  - **whisper.cpp**（`ggml-small-q5_1.bin`，约 181 MB，CPU 下每轮约 3 秒）——多语言支持，内置严格的中英文字脚本校验器，识别语种错误时自动重试。
+  - **Paraformer-zh** 通过 `sherpa-onnx-node`（约 232 MB ONNX，每轮约 300–500 ms）——当前最优的中文识别方案，选中"中文"时自动启用。基于原生 Node 插件，无需 Python 辅助进程。
+- **TTS**：[edge-tts](https://github.com/rany2/edge-tts)——免费但需要联网。预设以"英 + 中"神经音配对（女声：Xiaoxiao / Xiaoyi / HsiaoYu；男声：Yunxi / Yunyang / Yunjian / YunJhe），语速与模型均可在输入栏的下拉中调节。
+- **语音活动检测**：`@ricky0123/vad-web` 中的 Silero VAD，运行于 AudioWorklet 之中。回复播放期间仍保持监听以支持打断；TTS 开始后设有 1 秒的宽限期，用以屏蔽回音泄漏。
+- **虚拟形象**：由 `pixi-live2d-display` 驱动 Live2D Cubism 4 模型。默认采用 Haru（女）与 Natori / Mark（男），可通过环境变量替换为自定义模型。Claude 发出的表情标签会映射至各模型对应的情绪槽（Haru 的 `f01`–`f08`，Natori 的 `Smile` / `Angry` / `Sad` 等）。
+- **追踪**：MediaPipe Face Landmarker 每两秒左右进行一次推理，输出 52 项 blendshape 与鼻尖位置。快照会作为自然语言前缀拼接到每轮用户消息中；鼻尖位置同时驱动 Live2D 的 `model.focus`，令她的视线始终追随你。离开与归来均会触发简短的问候。
+- **口型同步**：Web Audio 的 `AnalyserNode` 从 TTS 音频流中读取 RMS，每帧写入 `ParamMouthOpenY` 并叠加 `ParamMouthForm`，使嘴形的开合与轮廓紧贴音节包络。Hook 点置于 Cubism 的 `coreModel.update` 之上，因为顶点烘焙正发生于此层，写在外层的 `internalModel.update` 上为时已晚。
 
 ### 人设与记忆
 
-项目根目录里有两个用户可编辑的 markdown，每轮 Claude 都会看到：
+项目根目录下有两份用户可编辑的 markdown 文件，Claude 在每一轮对话中均会读取：
 
-- **`persona.md`** —— 她是谁。定义她的声音、和你的关系、角色扮演的设定。随便改；硬编码的输出规则（禁止 emoji / markdown / 代码块，因为这是 TTS）永远放在最上层。
-- **`memory.md`** —— 长期事实。她在回复中发出 `<remember>一句话</remember>` 就会自动追加进去，你也可以直接编辑。
+- **`persona.md`**——定义她的身份：声音、与你的关系、角色扮演的设定等。可自由编辑；硬编码的输出规则（禁用 emoji、markdown、代码块，因输出直送 TTS）始终位居最上层，不可覆盖。
+- **`memory.md`**——关于你的长期事实。她在回复中发出 `<remember>一句话</remember>` 即会自动追加至此文件，你亦可直接编辑。
 
-两个文件都 **不会提交 git**。仓库自带 `persona.default.md` / `memory.default.md` 作为回落。会话历史跨重启持久化在 `.iris/session-meta.json`—— 记录当前系统提示词的 SHA-256，改了人设 / 记忆 / 预设会自动开新会话，而不是让旧的 prompt 继续生效。
+二者均 **不纳入 git**。仓库内置 `persona.default.md` / `memory.default.md` 作为回落。会话历史通过 `.iris/session-meta.json` 跨重启持久化——其中记录了当前系统提示词的 SHA-256；修改人设、记忆或预设后会自动开启新会话，而非让旧 prompt 继续生效。
 
 ### 设置面板
 
-点聊天栏顶部的 **⚙︎ settings**：
-- 人设编辑区（保存、恢复默认）
-- 记忆编辑区（保存、清空）
-- 当前会话 id + "new session" 按钮
+点击聊天栏顶部的 **⚙︎ settings**，可进行以下操作：
+- 编辑人设（保存、恢复默认）
+- 编辑记忆（保存、一键清空）
+- 查看当前会话 id，或创建新会话
 
-**语言**、**音色/形象预设**、**语速**、**模型**四个下拉放在输入栏，选择会存进 `localStorage`。
+**语言**、**音色与形象预设**、**语速**、**模型** 四项下拉位于输入栏，所选值保存在 `localStorage` 中。
 
 ### 运行
 
-前置：
-- Node 20+
-- Python 3，`pip install edge-tts`
-- 装好并登录过的 `claude` CLI（终端里敲 `claude` 能用）
-- Xcode Command Line Tools（编译 whisper.cpp）
+前置条件：
+- Node 20 及以上
+- Python 3，执行 `pip install edge-tts`
+- 已安装并登录的 `claude` CLI（终端中 `claude` 命令可正常使用）
+- Xcode Command Line Tools（用于编译 whisper.cpp）
 - CMake
-- 能开麦克风和摄像头的现代浏览器
+- 支持麦克风与摄像头权限的现代浏览器
 
 ```bash
-# 1. 编译 whisper.cpp + 下载默认模型（~181 MB）
+# 1. 编译 whisper.cpp 并下载默认模型(约 181 MB)
 ./scripts/install-whisper.sh
 
-# 2.（可选，推荐）Paraformer-zh，中文识别更快更准
+# 2. (可选，推荐)安装 Paraformer-zh，中文识别更快更准
 ./scripts/install-paraformer.sh
 
-# 3. 装 node 依赖
+# 3. 安装 node 依赖
 npm install
 
-# 4. 启动
+# 4. 启动服务
 npm run dev
 # 打开 http://localhost:3000
 ```
 
-第一次回复大约 4 秒（冷启动 Claude 子进程 + 模型预热），之后每轮首音频片段大约 1 秒内就能送到。
+首轮回复约需 4 秒（冷启动 Claude 子进程与模型预热），此后每轮首段音频大致在 1 秒内送达。
 
 ### 环境变量
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `IRIS_CLAUDE_MODEL` | `sonnet` | 默认 Claude 模型（UI 选择覆盖每个连接的值）|
+| `IRIS_CLAUDE_MODEL` | `sonnet` | 默认 Claude 模型（UI 选择会覆盖每个连接的值）|
 | `IRIS_WHISPER_MODEL` | `ggml-small-q5_1.bin` | 默认 whisper 模型 |
-| `IRIS_WHISPER_MODEL_EN` / `_ZH` | 同上 | 分语言覆盖 |
+| `IRIS_WHISPER_MODEL_EN` / `_ZH` | 同上 | 按语言覆盖 whisper 模型 |
 | `IRIS_PARAFORMER_MODEL` | `models/paraformer-zh/model.int8.onnx` | Paraformer ONNX 路径 |
 | `IRIS_VOICE_EN` / `IRIS_VOICE_ZH` | `AvaNeural` / `XiaoxiaoNeural` | 女声 edge-tts 默认 |
 | `IRIS_VOICE_EN_M` / `IRIS_VOICE_ZH_M` | `AndrewNeural` / `YunxiNeural` | 男声 edge-tts 默认 |
@@ -224,6 +224,6 @@ npm run dev
 | `IRIS_AVATAR_FEMALE_URL` | Haru CDN | 自定义女性 Live2D `.model3.json` URL |
 | `IRIS_AVATAR_MALE_URL` | Natori CDN | 自定义男性 Live2D `.model3.json` URL |
 
-### Metal / Apple Silicon 注意
+### Metal / Apple Silicon 说明
 
-`install-whisper.sh` 用 `-DGGML_METAL=OFF` 禁掉了 Metal 后端，因为 Metal 在 Intel Mac 上会产出乱码。Apple Silicon 上把这个 flag 拿掉就能用 GPU 加速，速度会快很多。
+`install-whisper.sh` 以 `-DGGML_METAL=OFF` 关闭了 Metal 后端，因其在 Intel Mac 上会产生异常输出。若使用 Apple Silicon，请移除该 flag 以启用 GPU 加速，性能提升十分明显。
