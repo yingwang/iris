@@ -142,9 +142,12 @@ export class AvatarStage {
       const im = this.model.internalModel;
       if (im && typeof im.update === "function") {
         const origUpdate = im.update.bind(im);
+        let patchRunCount = 0;
+        let patchWriteCount = 0;
         im.update = (...args) => {
           const ret = origUpdate(...args);
           try {
+            patchRunCount++;
             if (this.externalMouth > 0.01) {
               const core = im.coreModel;
               core?.setParameterValueById?.(
@@ -165,10 +168,32 @@ export class AvatarStage {
                 "ParamMouthForm",
                 curForm + boost
               );
+              patchWriteCount++;
+              if (patchWriteCount === 1 || patchWriteCount % 60 === 0) {
+                console.log(
+                  `[stage] lip sync write #${patchWriteCount} ` +
+                    `(patch run ${patchRunCount}) ` +
+                    `mouth=${this.externalMouth.toFixed(3)}`
+                );
+              }
             }
-          } catch {}
+          } catch (err) {
+            if (patchRunCount % 120 === 0) {
+              console.warn("[stage] lip sync write failed:", err);
+            }
+          }
           return ret;
         };
+        console.log(
+          "[stage] patched internalModel.update for lip sync"
+        );
+      } else {
+        console.warn(
+          "[stage] could not patch internalModel.update — im:",
+          im,
+          "update type:",
+          typeof im?.update
+        );
       }
     } catch (err) {
       console.warn("[stage] couldn't patch update for lip sync:", err);
@@ -235,6 +260,69 @@ export class AvatarStage {
       },
       model() {
         return self.model;
+      },
+      // Read the current lip-sync amplitude value stored by main.js.
+      // Should oscillate 0..1 while iris is speaking. If it stays 0
+      // the lip sync RMS loop isn't running / isn't receiving audio.
+      mouth() {
+        return self.externalMouth;
+      },
+      // Directly write the mouth-open parameter, bypassing the lip
+      // sync loop entirely. Useful for confirming the parameter ID
+      // and write path are correct. Try `iris.testMouth(1)` — iris
+      // should open her mouth wide immediately.
+      testMouth(v = 1) {
+        const core = self.model?.internalModel?.coreModel;
+        if (!core) {
+          console.warn("no coreModel");
+          return;
+        }
+        const methods = [
+          "setParameterValueById",
+          "setParameterValue",
+        ];
+        const available = methods.filter((m) => typeof core[m] === "function");
+        console.log("[iris.testMouth] available methods:", available);
+        try {
+          core.setParameterValueById?.("ParamMouthOpenY", v);
+          console.log("[iris.testMouth] wrote ParamMouthOpenY =", v);
+          const read = core.getParameterValueById?.("ParamMouthOpenY");
+          console.log("[iris.testMouth] readback:", read);
+        } catch (err) {
+          console.warn("failed:", err);
+        }
+      },
+      // Set externalMouth directly so the patched update() loop
+      // sees it and writes to the model. Confirms the patch path
+      // works end-to-end. Try `iris.forceMouth(0.8)` — should hold
+      // the mouth open.
+      forceMouth(v = 0.8) {
+        self.externalMouth = v;
+        console.log("[iris.forceMouth] externalMouth =", v);
+      },
+      // List all parameter IDs the current model exposes. Helps
+      // confirm that ParamMouthOpenY is actually the right name.
+      listParams() {
+        const core = self.model?.internalModel?.coreModel;
+        if (!core) return;
+        // Cubism 4 core models expose _parameterIds on their
+        // internal model. Different builds use different names.
+        const ids =
+          core._parameterIds ||
+          core.parameterIds ||
+          core._model?._parameterIds ||
+          [];
+        if (ids && ids.length) {
+          ids.forEach((id, i) => console.log(`  ${i}: ${id}`));
+          return;
+        }
+        // Fallback: try reading the parameter count and names
+        // via the getModelParameterCount/getParameterId API.
+        const count = core.getParameterCount?.() || 0;
+        for (let i = 0; i < count; i++) {
+          const id = core.getParameterId?.(i) || core._parameterIds?.[i];
+          console.log(`  ${i}: ${id}`);
+        }
       },
     };
 
