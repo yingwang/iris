@@ -208,7 +208,7 @@ function handleServerMessage(msg) {
       break;
     case "stt_result":
       appendBubble("user", msg.text);
-      statusEl.textContent = "iris is thinking…";
+      statusEl.textContent = "thinking…";
       break;
     case "stt_empty":
       // Leave a faint trace in the transcript so the user knows
@@ -481,12 +481,12 @@ document.getElementById("persona-reset").addEventListener("click", async () => {
   await openSettings(); // reload to show the default content
 });
 document.getElementById("memory-clear").addEventListener("click", async () => {
-  if (!confirm("Clear all memory? Iris will forget everything stored in memory.md.")) return;
+  if (!confirm("Clear all memory? I will forget everything stored in memory.md.")) return;
   await saveField("memory", "");
   memoryText.value = "";
 });
 document.getElementById("session-reset").addEventListener("click", async () => {
-  if (!confirm("Start a fresh conversation? The old session is kept on disk but Iris won't see it.")) return;
+  if (!confirm("Start a fresh conversation? The old session is kept on disk but I won't see it.")) return;
   setSettingsStatus("resetting…");
   try {
     const r = await fetch("/api/session/reset", { method: "POST" });
@@ -628,9 +628,11 @@ micBtn.addEventListener("click", (ev) => {
   if (!vadRecorder) return;
   if (vadRecorder.paused) {
     vadRecorder.resume();
+    micBtn.classList.remove("muted");
     statusEl.textContent = "listening for you · just talk";
   } else {
     vadRecorder.pause();
+    micBtn.classList.add("muted");
     statusEl.textContent = "mic muted — click 🎙️ to resume";
   }
 });
@@ -688,22 +690,26 @@ async function initFace() {
       avatarStage.setFocus(fx, fy);
     }, 125);
 
-    // Leave-and-return detection. Uses hysteresis rather than a
-    // hard debounce: "present" and "away" each accumulate a score
-    // that ticks up every poll where the current state matches,
-    // and we fire a transition when one side reaches a threshold.
-    // That way a single MediaPipe misfire doesn't reset the timer
-    // — it just decrements the counter, and the counter keeps
-    // climbing once real state resumes. With face tracker running
-    // at ~0.5 Hz, every real poll matters.
+    // Leave-and-return detection. Uses hysteresis on *fresh*
+    // inferences only: we track snap.seq so one MediaPipe result
+    // can't get counted multiple times just because the poll loop
+    // runs faster than the inference loop. The face tracker only
+    // produces a new reading every ~2 s, so we need 2 consecutive
+    // fresh "away" readings (4 s of real evidence) before we tell
+    // iris the user has left.
     let awayScore = 0;
     let presentScore = 0;
     let committedState = null; // "present" | "away" | null
-    let lastEmitAt = 0;
-    const THRESHOLD = 3; // ~3 polls of agreement to commit
+    let lastSeenSeq = -1;
+    const THRESHOLD = 2; // 2 fresh inferences of agreement to commit
     setInterval(() => {
       if (!faceTracker || !ws || ws.readyState !== WebSocket.OPEN) return;
       const snap = faceTracker.snapshot();
+      // Only act on fresh inferences — otherwise we'd count the
+      // same result (~every 2 s) as N identical poll ticks and
+      // commit instantly on one false negative.
+      if (snap.seq === lastSeenSeq) return;
+      lastSeenSeq = snap.seq;
       const looking = snap.looking === true;
       if (looking) {
         presentScore = Math.min(THRESHOLD, presentScore + 1);
@@ -721,10 +727,6 @@ async function initFace() {
       // First commit is just the baseline — don't ping iris on the
       // initial "oh you have a face" detection.
       if (prev === null) return;
-      // Rate-limit actual pings so a flaky camera doesn't spam iris.
-      const now = Date.now();
-      if (now - lastEmitAt < 12000) return;
-      lastEmitAt = now;
       const event = newState === "away" ? "left" : "returned";
       console.log(`[face-transition] ${prev} → ${newState} (${event})`);
       ws.send(JSON.stringify({ type: "face_transition", event }));

@@ -258,26 +258,41 @@ export function writeSessionId(id) {
 
 /**
  * Wrap the raw memory content in a clearly-labeled block so Claude
- * treats it as long-term facts rather than immediate input. Returns
- * an empty string when the memory is empty — no block means no
- * block-header noise in the prompt.
+ * treats it as long-term facts rather than immediate input. Always
+ * emits the <remember> instructions even when memory is empty — you
+ * have to tell iris how to save her first fact, otherwise she
+ * confidently says "记住了" in prose without ever firing the tag.
  */
 function buildMemoryBlock() {
   const mem = readMemory();
-  if (!mem) return "";
+  const body = mem
+    ? `The current contents of long-term memory are:\n\n${mem}\n\nTreat these as background context you already know about the user — refer to them naturally when relevant, don't announce or recite them back.`
+    : `Long-term memory is currently empty.`;
   return `
 
-LONG-TERM MEMORY — these are things you know about the user from previous conversations.
-They were saved here deliberately; treat them as background context, not something to
-announce or repeat back. Refer to them naturally when relevant.
+LONG-TERM MEMORY — facts you know about the user from previous conversations, stored on disk.
 
-You can save new facts to this memory by emitting <remember>the fact in one sentence</remember>
-in the middle of a reply. The tag is stripped from what the user hears, and the fact is
-appended to long-term memory on disk. Use it sparingly — only save things the user has
-actually told you about themselves that you'd want to recall next time. Do NOT save the
-content of the current turn's chitchat or ephemeral task state.
+${body}
 
-${mem}`;
+HOW TO SAVE A NEW FACT: emit <remember>the fact in one sentence</remember> inline anywhere
+in your reply. The tag itself is stripped before the user sees or hears anything, and the
+fact is appended to long-term memory on disk.
+
+You MUST emit a <remember> tag in the SAME reply whenever:
+- The user tells you a personal preference, taste, habit, relationship, name, or fact
+  about themselves ("我最喜欢吃糖醋里脊", "我妈叫王阿姨", "I work at Spotify")
+- The user explicitly asks you to remember something ("记住", "remember this", "别忘了")
+- You verbally claim to remember or commit something ("记住了", "刻在心里了", "I'll remember
+  that") — saying it in prose is NOT saving it, only the tag persists it
+
+Do NOT just say "记住了" without also emitting the tag. Saying it without the tag is lying —
+the fact will be gone by the next conversation. If you're going to acknowledge remembering,
+the tag MUST come with it.
+
+Keep each <remember> to one short factual sentence in third person ("阿宁最爱糖醋里脊",
+"The user works as a software engineer in Stockholm"). One tag per fact; multiple tags per
+reply is fine when multiple facts came up. Don't save ephemeral chitchat or the content of
+the current task — only durable facts about who the user is and what they like.`;
 }
 
 /**

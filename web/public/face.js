@@ -44,6 +44,12 @@ export class FaceTracker {
     // the main thread while iris is speaking.
     this.paused = false;
     this.latest = defaultSnapshot();
+    // Increments on every new inference. Consumers (main.js face-
+    // transition hysteresis) use this to distinguish a fresh reading
+    // from a stale repeat of the last one, so one MediaPipe misfire
+    // can't get counted multiple times while the next inference is
+    // still 2 s away.
+    this.seq = 0;
   }
 
   async start() {
@@ -105,8 +111,10 @@ export class FaceTracker {
             }
           }
           this.latest = snap;
+          this.seq++;
         } else {
           this.latest = { ...defaultSnapshot(), looking: false, label: "looking away" };
+          this.seq++;
         }
       } catch (err) {
         // swallow transient errors (first frame, resize, etc.)
@@ -121,7 +129,7 @@ export class FaceTracker {
 
   /** Return the most recent expression snapshot (safe to call from anywhere). */
   snapshot() {
-    return { ...this.latest };
+    return { ...this.latest, seq: this.seq };
   }
 }
 

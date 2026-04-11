@@ -170,6 +170,10 @@ main {
   cursor: pointer;
 }
 #mic.recording {
+  background: #3fa46a;
+  border-color: #3fa46a;
+}
+#mic.muted {
   background: #b04a4a;
   border-color: #b04a4a;
 }

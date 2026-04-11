@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>iris</title>
+    <title>我</title>
     <link rel="stylesheet" href="/style.css" />
 
     <!--
@@ -38,7 +38,7 @@
           <input
             id="input"
             type="text"
-            placeholder="Type to Iris, or hold Space / mic to talk…"
+            placeholder="跟我说说话…"
             autocomplete="off"
           />
           <button id="mic" type="button" aria-label="hold to talk" title="Hold to talk">🎙️</button>
@@ -72,7 +72,7 @@
       the active session id, and see / change the voice prefs without
       digging through the compose bar. Both text areas hit GET and POST
       /api/persona and /api/memory; the server also updates memory.md
-      automatically when iris emits <remember>…</remember> cues.
+      automatically when I emit <remember>…</remember> cues.
     -->
     <div id="settings-modal" hidden>
       <div class="settings-backdrop"></div>
@@ -84,7 +84,7 @@
 
         <section>
           <label for="persona-text">persona</label>
-          <p class="hint">Who Iris is. Edit freely — hardcoded output rules always stay on top.</p>
+          <p class="hint">Who I am. Edit freely — hardcoded output rules always stay on top.</p>
           <textarea id="persona-text" rows="12" placeholder="Loading…"></textarea>
           <div class="row">
             <button id="persona-save" type="button">save persona</button>
@@ -94,7 +94,7 @@
 
         <section>
           <label for="memory-text">memory</label>
-          <p class="hint">Long-term facts Iris knows about you. Iris can add here by saying
+          <p class="hint">Long-term facts I know about you. I can add here by saying
             <code>&lt;remember&gt;…&lt;/remember&gt;</code> mid-reply, and you can edit it
             directly any time.</p>
           <textarea id="memory-text" rows="12" placeholder="Loading…"></textarea>

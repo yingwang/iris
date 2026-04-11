@@ -352,6 +352,29 @@ app.get("/ws", { websocket: true }, (socket, req) => {
   // triggered turns so they don't collide with user turns.
   let turnInFlight = false;
 
+  // Promise chain serializing turns against the underlying
+  // ClaudeSession. The session only supports one in-flight turn at a
+  // time — two concurrent session.send() calls would overwrite each
+  // other's turnSink and silently drop the second reply — so we pipe
+  // every turn (user, greeting, ambient, face transition) through
+  // queueTurn() which awaits the previous one before starting the
+  // next. pendingTurns counts queued-or-running turns so face /
+  // ambient triggers can skip when there's already work pending
+  // instead of piling on.
+  let turnChain = Promise.resolve();
+  let pendingTurns = 0;
+  const queueTurn = (prompt) => {
+    pendingTurns++;
+    const next = turnChain
+      .catch(() => {}) // a failed turn shouldn't poison the chain
+      .then(() => streamAssistantTurn(prompt))
+      .finally(() => {
+        pendingTurns--;
+      });
+    turnChain = next;
+    return next;
+  };
+
   // Timestamp of the last time the user actually said or typed
   // something. Used by the ambient check-in timer to decide when
   // to nudge iris into saying something during a long silence.
@@ -493,6 +516,22 @@ app.get("/ws", { websocket: true }, (socket, req) => {
     // when cancel() fired; emitting a stale assistant_end here races
     // the next turn and can split its transcript bubble in half.
     if (!isInterrupted()) {
+      // Zero-text turns — Claude produced no visible prose, which
+      // usually means she filled the reply with an <expr:thinking>
+      // scratchpad (the processor hides those) or emitted only
+      // <expr:...> cues and <remember> tags. To the user this looks
+      // like iris just ignored them. Surface a visible error bubble
+      // so they can retry instead of staring at silence.
+      if (!full.trim()) {
+        app.log.warn(
+          { prompt: userText.slice(0, 120) },
+          "assistant turn produced no visible text — likely hidden inside <expr:thinking>"
+        );
+        send({
+          type: "assistant_chunk",
+          text: "（我走神了，再说一遍？）",
+        });
+      }
       send({ type: "assistant_end" });
     }
     turnInFlight = false;
@@ -516,7 +555,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
     // detector. Triggers a short check-in turn so iris notices
     // when the user steps out of view or comes back.
     if (msg.type === "face_transition") {
-      if (turnInFlight) return; // don't clobber an active reply
+      if (pendingTurns > 0) return; // don't clobber an active / queued reply
       const prompt =
         msg.event === "left"
           ? "[System: The user just stepped out of the camera view. " +
@@ -527,7 +566,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
             "being away. Welcome them back in one short warm line. Match " +
             "your persona's voice. One line only.]";
       try {
-        await streamAssistantTurn(prompt);
+        await queueTurn(prompt);
       } catch (err) {
         app.log.warn({ err: err.message }, "face transition turn failed");
       }
@@ -575,7 +614,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
         if (msg.expression?.label) lastFaceLabel = msg.expression.label;
         else if (msg.expression?.looking === false)
           lastFaceLabel = "looking away";
-        await streamAssistantTurn(userInput);
+        await queueTurn(userInput);
       } catch (err) {
         app.log.error(err);
         send({ type: "error", message: err.message || String(err) });
@@ -619,7 +658,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
         if (msg.expression?.label) lastFaceLabel = msg.expression.label;
         else if (msg.expression?.looking === false)
           lastFaceLabel = "looking away";
-        await streamAssistantTurn(userInput);
+        await queueTurn(userInput);
       } catch (err) {
         app.log.error(err);
         send({ type: "error", message: err.message || String(err) });
@@ -653,7 +692,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
         "language of your persona. Don't explain what you are, don't " +
         "narrate this note, just say hi.]";
       try {
-        await streamAssistantTurn(greetPrompt);
+        await queueTurn(greetPrompt);
       } catch (err) {
         app.log.warn({ err: err.message }, "greeting failed");
       }
@@ -666,7 +705,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
   const AMBIENT_SILENCE_MS = 90000;
   const ambientTimer = setInterval(async () => {
     if (socket.readyState !== 1) return;
-    if (turnInFlight) return;
+    if (pendingTurns > 0) return;
     const idle = Date.now() - lastUserActivityAt;
     if (idle < AMBIENT_SILENCE_MS) return;
     // Reset the clock to half-interval so the next ambient fires at
@@ -680,7 +719,7 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       "'still there?' or '殿下在想什么'. Match your persona's voice. " +
       "One line only, don't push or repeat yourself.]";
     try {
-      await streamAssistantTurn(prompt);
+      await queueTurn(prompt);
     } catch (err) {
       app.log.warn({ err: err.message }, "ambient check-in failed");
     }
