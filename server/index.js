@@ -129,21 +129,36 @@ function extractRememberBlocks(text) {
  * arbitrary chunks and can contain:
  *   - Self-closing mood cues: <expr:happy>, <expr:curious>, …
  *     → forwarded to the avatar, stripped from chat/TTS text
- *   - Rogue reasoning blocks: <expr:thinking> ... </expr:thinking>
- *     → entire block hidden from chat AND TTS (model hallucinated it
- *       as a scratchpad; the user shouldn't see or hear its insides)
  *   - Close tags the model invents: </expr:happy>
  *     → silently dropped
+ *   - Unknown mood names: <expr:thinking>, <expr:angry>, etc.
+ *     → aliased to the closest real mood, or silently stripped
  *
  * Tags can straddle chunk boundaries, so we keep a `pending` buffer
- * holding any incomplete "<…" tail, and a `hiding` flag tracking
- * whether we're inside an opened thinking block. Returns `{ text,
- * cues }` — text is safe to display/speak, cues are expression names
- * to forward to the browser.
+ * holding any incomplete "<…" tail. Returns `{ text, cues }` — text
+ * is safe to display/speak, cues are expression names to forward to
+ * the browser.
+ *
+ * Historical note: there used to be a `hiding` mode that treated
+ * <expr:thinking> ... </expr:thinking> as a reasoning scratchpad to
+ * hide. That was wrong — Claude uses <expr:thinking> as a self-
+ * closing mood tag like all the others, so hiding meant the entire
+ * reply disappeared whenever she opened with it. Now we just alias.
  */
+const EXPR_ALIASES = {
+  thinking: "curious",
+  angry: "serious",
+  neutral: "happy",
+  excited: "happy",
+  worried: "sad",
+};
+const VALID_EXPR = new Set([
+  "happy", "surprised", "sad", "curious",
+  "playful", "confused", "shy", "serious",
+]);
+
 function createExpressionStream() {
   let pending = "";
-  let hiding = false;
   return {
     push(chunk) {
       pending += chunk;
@@ -151,17 +166,6 @@ function createExpressionStream() {
       const cues = [];
       let i = 0;
       while (i < pending.length) {
-        if (hiding) {
-          const close = pending.indexOf("</expr:thinking>", i);
-          if (close === -1) {
-            // Still hiding, discard everything up to here and wait.
-            pending = "";
-            return { text: out, cues };
-          }
-          i = close + "</expr:thinking>".length;
-          hiding = false;
-          continue;
-        }
         const lt = pending.indexOf("<", i);
         if (lt === -1) {
           out += pending.slice(i);
@@ -178,12 +182,12 @@ function createExpressionStream() {
         const tag = pending.slice(lt, gt + 1);
         const openMatch = /^<expr:([a-z]+)>$/i.exec(tag);
         if (openMatch) {
-          const name = openMatch[1].toLowerCase();
-          if (name === "thinking") {
-            hiding = true;
-          } else {
-            cues.push(name);
-          }
+          const raw = openMatch[1].toLowerCase();
+          const name = VALID_EXPR.has(raw)
+            ? raw
+            : EXPR_ALIASES[raw] || null;
+          if (name) cues.push(name);
+          // Either way, the tag itself is stripped from output.
         } else if (!/^<\/expr:[a-z]+>$/i.test(tag)) {
           // Not one of our tags — pass it through untouched so we
           // don't eat angle brackets that belong to real content.
@@ -196,11 +200,10 @@ function createExpressionStream() {
     },
     flush() {
       // On stream end, anything still in `pending` is a broken tag
-      // or truncated text; emit whatever is safe. If we were hiding,
-      // drop the partial reasoning entirely.
-      const rest = hiding ? "" : pending;
+      // or truncated text. Emit it verbatim — losing the tail is
+      // worse than leaking a half-tag.
+      const rest = pending;
       pending = "";
-      hiding = false;
       return rest;
     },
   };
