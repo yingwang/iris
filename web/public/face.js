@@ -79,12 +79,13 @@ export class FaceTracker {
 
   loop() {
     if (!this.running) return;
-    // Skip the actual MediaPipe call when paused (typically set by
-    // main.js during TTS playback) — the inference is the expensive
-    // part, so this gives the main thread back to Live2D and audio
-    // decoding while iris is speaking. We keep the scheduler alive
-    // so the loop resumes the instant paused flips back to false.
-    if (!this.paused && this.videoEl.readyState >= 2) {
+    // Always run the inference, regardless of TTS playback — we
+    // need fresh snapshots even while iris is speaking so
+    // leave/return detection catches the user stepping away
+    // mid-reply. The `paused` flag instead slows the cadence down
+    // to save CPU without dropping data entirely: 2 s between
+    // inferences normally, 4 s while iris is talking.
+    if (this.videoEl.readyState >= 2) {
       try {
         const now = performance.now();
         const result = this.landmarker.detectForVideo(this.videoEl, now);
@@ -111,12 +112,11 @@ export class FaceTracker {
         // swallow transient errors (first frame, resize, etc.)
       }
     }
-    // Throttle between inferences. Each MediaPipe call takes
-    // ~250–300 ms on this CPU, so anything below ~1.5 s ends up
-    // running back-to-back and triggering browser 'setTimeout took
-    // Nms' violations. 2 s keeps CPU load low while still giving
-    // a reasonably fresh snapshot whenever the user sends a turn.
-    setTimeout(() => this.loop(), this.paused ? 500 : 2000);
+    // 2 s between inferences normally, stretched to 4 s while TTS
+    // is playing so Live2D / audio decoding have more idle main-
+    // thread time. Each MediaPipe call is ~280 ms so the cost is
+    // ~14% CPU in the quiet case, ~7% while iris is speaking.
+    setTimeout(() => this.loop(), this.paused ? 4000 : 2000);
   }
 
   /** Return the most recent expression snapshot (safe to call from anywhere). */

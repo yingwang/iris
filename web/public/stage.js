@@ -139,92 +139,47 @@ export class AvatarStage {
     // force the mouth closed the moment iris stops talking and
     // the expression's mouth-open component would be lost.
     try {
-      const im = this.model.internalModel;
-      if (im && typeof im.update === "function") {
-        // Also patch the Cubism core's update() — THAT'S the
-        // method that actually bakes parameter values into the
-        // vertex buffer each frame. If we only write in
-        // internalModel.update, our write happens AFTER the bake
-        // and sits unused in the parameter store until it's
-        // cleared by the next frame's motion manager. Patching
-        // coreModel.update lets us inject our value right before
-        // the bake so the visual actually changes.
-        const core = im.coreModel;
-        if (core && typeof core.update === "function") {
-          const origCoreUpdate = core.update.bind(core);
-          core.update = (...args) => {
-            try {
-              if (this.externalMouth > 0.01) {
-                core.setParameterValueById?.(
-                  "ParamMouthOpenY",
-                  this.externalMouth
-                );
-                // Also nudge ParamMouthForm additively (see below).
-                const curForm =
-                  core.getParameterValueById?.("ParamMouthForm") || 0;
-                const boost = Math.min(0.15, this.externalMouth * 0.25);
-                core.setParameterValueById?.(
-                  "ParamMouthForm",
-                  curForm + boost
-                );
-              }
-            } catch {}
-            return origCoreUpdate(...args);
-          };
-          console.log("[stage] patched coreModel.update for lip sync");
-        }
-        const origUpdate = im.update.bind(im);
-        let patchRunCount = 0;
-        let patchWriteCount = 0;
-        im.update = (...args) => {
-          const ret = origUpdate(...args);
+      // Patch the Cubism core's update() — that's the method that
+      // actually bakes parameter values into the vertex buffer
+      // each frame. Writing to ParamMouthOpenY anywhere else
+      // sticks the value in the parameter store but the mesh
+      // doesn't pick it up until a subsequent bake, by which time
+      // the next frame's motion manager has cleared it. Injecting
+      // our write at the top of coreModel.update makes us the last
+      // writer before vertices get rebuilt, so the mouth actually
+      // reflects the RMS value.
+      const core = this.model.internalModel?.coreModel;
+      if (core && typeof core.update === "function") {
+        const origCoreUpdate = core.update.bind(core);
+        core.update = (...args) => {
           try {
-            patchRunCount++;
             if (this.externalMouth > 0.01) {
-              const core = im.coreModel;
-              core?.setParameterValueById?.(
+              core.setParameterValueById?.(
                 "ParamMouthOpenY",
                 this.externalMouth
               );
-              // Richer mouth: give louder syllables a small additive
-              // nudge to ParamMouthForm. We read the current value
-              // first (which reflects whatever the active expression
-              // set) and add a capped-small boost on top, so the
-              // mood — Angry lip curl, Sad downturn — still wins,
-              // but the mouth animates a bit during speech instead
-              // of being dead-still at the expression's resting form.
+              // Richer mouth: give louder syllables a small
+              // additive nudge to ParamMouthForm. We read the
+              // current value first (which reflects whatever the
+              // active expression set) and add a small capped
+              // boost, so the mood still dominates but the mouth
+              // animates a bit during speech.
               const curForm =
-                core?.getParameterValueById?.("ParamMouthForm") || 0;
+                core.getParameterValueById?.("ParamMouthForm") || 0;
               const boost = Math.min(0.15, this.externalMouth * 0.25);
-              core?.setParameterValueById?.(
+              core.setParameterValueById?.(
                 "ParamMouthForm",
                 curForm + boost
               );
-              patchWriteCount++;
-              if (patchWriteCount === 1 || patchWriteCount % 60 === 0) {
-                console.log(
-                  `[stage] lip sync write #${patchWriteCount} ` +
-                    `(patch run ${patchRunCount}) ` +
-                    `mouth=${this.externalMouth.toFixed(3)}`
-                );
-              }
             }
-          } catch (err) {
-            if (patchRunCount % 120 === 0) {
-              console.warn("[stage] lip sync write failed:", err);
-            }
-          }
-          return ret;
+          } catch {}
+          return origCoreUpdate(...args);
         };
-        console.log(
-          "[stage] patched internalModel.update for lip sync"
-        );
+        console.log("[stage] patched coreModel.update for lip sync");
       } else {
         console.warn(
-          "[stage] could not patch internalModel.update — im:",
-          im,
-          "update type:",
-          typeof im?.update
+          "[stage] could not patch coreModel.update — core:",
+          core
         );
       }
     } catch (err) {

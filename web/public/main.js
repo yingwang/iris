@@ -688,52 +688,53 @@ async function initFace() {
       avatarStage.setFocus(fx, fy);
     }, 125);
 
-    // Leave-and-return detection. When the user steps out of view
-    // or comes back, fire a "face_transition" message to the
-    // server so iris can say a short check-in line. Debounce on
-    // both directions — state must be stable for 2 s to count.
-    let lastStable = null;
-    let pending = null;
-    let pendingSince = 0;
+    // Leave-and-return detection. Uses hysteresis rather than a
+    // hard debounce: "present" and "away" each accumulate a score
+    // that ticks up every poll where the current state matches,
+    // and we fire a transition when one side reaches a threshold.
+    // That way a single MediaPipe misfire doesn't reset the timer
+    // — it just decrements the counter, and the counter keeps
+    // climbing once real state resumes. With face tracker running
+    // at ~0.5 Hz, every real poll matters.
+    let awayScore = 0;
+    let presentScore = 0;
+    let committedState = null; // "present" | "away" | null
     let lastEmitAt = 0;
+    const THRESHOLD = 3; // ~3 polls of agreement to commit
     setInterval(() => {
       if (!faceTracker || !ws || ws.readyState !== WebSocket.OPEN) return;
       const snap = faceTracker.snapshot();
-      const state = snap.looking ? "present" : "away";
-      if (state !== lastStable) {
-        if (pending !== state) {
-          pending = state;
-          pendingSince = Date.now();
-          return;
-        }
-        if (Date.now() - pendingSince < 2000) return;
-        // Stable for 2 s — consider it a transition.
-        const now = Date.now();
-        if (now - lastEmitAt < 15000) {
-          // Rate-limit so a flaky camera doesn't spam iris with
-          // leave/return pings.
-          lastStable = state;
-          pending = null;
-          return;
-        }
-        if (lastStable !== null) {
-          // Only emit AFTER we've observed a baseline state, so
-          // initial "no face yet" doesn't trigger an immediate
-          // welcome message.
-          ws.send(
-            JSON.stringify({
-              type: "face_transition",
-              event: state === "away" ? "left" : "returned",
-            })
-          );
-          lastEmitAt = now;
-        }
-        lastStable = state;
-        pending = null;
+      const looking = snap.looking === true;
+      if (looking) {
+        presentScore = Math.min(THRESHOLD, presentScore + 1);
+        awayScore = Math.max(0, awayScore - 1);
       } else {
-        pending = null;
+        awayScore = Math.min(THRESHOLD, awayScore + 1);
+        presentScore = Math.max(0, presentScore - 1);
       }
-    }, 500);
+      let newState = committedState;
+      if (presentScore >= THRESHOLD) newState = "present";
+      else if (awayScore >= THRESHOLD) newState = "away";
+      if (newState === committedState) return;
+      const prev = committedState;
+      committedState = newState;
+      console.log(
+        `[face-transition] ${prev ?? "(none)"} → ${newState} (p=${presentScore} a=${awayScore})`
+      );
+      // First commit is just the baseline — don't ping iris on the
+      // initial "oh you have a face" detection.
+      if (prev === null) return;
+      // Rate-limit actual pings so a flaky camera doesn't spam iris.
+      const now = Date.now();
+      if (now - lastEmitAt < 12000) {
+        console.log("[face-transition] rate-limited, skipping emit");
+        return;
+      }
+      lastEmitAt = now;
+      const event = newState === "away" ? "left" : "returned";
+      console.log(`[face-transition] → server: ${event}`);
+      ws.send(JSON.stringify({ type: "face_transition", event }));
+    }, 600);
   } catch (err) {
     console.error("face tracking unavailable:", err);
     faceDebugEl.textContent = `face: FAILED — ${err.message || err.name}`;
