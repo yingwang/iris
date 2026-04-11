@@ -2,7 +2,7 @@
 
 A voice + video AI companion that lives in your browser. Claude as the brain, Live2D as the face, real-time conversation with lip sync, face tracking, and memory. You just talk — iris sees you, hears you, and talks back.
 
-*[中文版在下面 / Chinese version below](#中文)*
+*[中文](#中文)*
 
 ---
 
@@ -57,7 +57,7 @@ The **language**, **persona** (voice preset + avatar), **speaking speed**, and *
 
 ## Running
 
-Prereqs:
+Prerequisites:
 - Node 20+
 - Python 3 with `pip install edge-tts`
 - `claude` CLI installed and logged in (`claude` works in your terminal)
