@@ -301,28 +301,75 @@ export class AvatarStage {
         console.log("[iris.forceMouth] externalMouth =", v);
       },
       // List all parameter IDs the current model exposes. Helps
-      // confirm that ParamMouthOpenY is actually the right name.
+      // confirm what the actual mouth-open parameter is called —
+      // different models use different IDs (ParamMouthOpenY,
+      // PARAM_MOUTH_OPEN_Y, "mouth_open", etc.).
       listParams() {
         const core = self.model?.internalModel?.coreModel;
-        if (!core) return;
-        // Cubism 4 core models expose _parameterIds on their
-        // internal model. Different builds use different names.
-        const ids =
-          core._parameterIds ||
-          core.parameterIds ||
-          core._model?._parameterIds ||
-          [];
-        if (ids && ids.length) {
-          ids.forEach((id, i) => console.log(`  ${i}: ${id}`));
+        if (!core) {
+          console.warn("no coreModel");
           return;
         }
-        // Fallback: try reading the parameter count and names
-        // via the getModelParameterCount/getParameterId API.
-        const count = core.getParameterCount?.() || 0;
-        for (let i = 0; i < count; i++) {
-          const id = core.getParameterId?.(i) || core._parameterIds?.[i];
-          console.log(`  ${i}: ${id}`);
+        // Try every lookup path we know about. The one that
+        // returns a non-empty array wins.
+        const tries = [
+          () => core.getModel?.().parameters?.ids,
+          () => core._model?.parameters?.ids,
+          () => core.parameters?.ids,
+          () => core._parameterIds,
+          () => core.parameterIds,
+          () => {
+            const n = core.getParameterCount?.();
+            if (!n) return null;
+            const arr = [];
+            for (let i = 0; i < n; i++) {
+              arr.push(core.getParameterId?.(i) || `<${i}>`);
+            }
+            return arr;
+          },
+        ];
+        for (const t of tries) {
+          try {
+            const ids = t();
+            if (ids && ids.length) {
+              console.log(`[iris.listParams] ${ids.length} params:`);
+              ids.forEach((id, i) => {
+                try {
+                  const v = core.getParameterValueById?.(id);
+                  console.log(`  ${i}: ${id} = ${v}`);
+                } catch {
+                  console.log(`  ${i}: ${id}`);
+                }
+              });
+              return;
+            }
+          } catch {}
         }
+        // Last resort: dump the coreModel's own keys so we can see
+        // what shape it actually has.
+        console.warn(
+          "[iris.listParams] no parameter list found; coreModel keys:",
+          Object.keys(core)
+        );
+      },
+      // Fuzzy-find a parameter by substring of its id. e.g.
+      // `iris.findParam("mouth")` returns any ID containing "mouth".
+      findParam(substr) {
+        const core = self.model?.internalModel?.coreModel;
+        if (!core) return [];
+        const all = [];
+        try {
+          const n = core.getParameterCount?.() || 0;
+          for (let i = 0; i < n; i++) {
+            const id = core.getParameterId?.(i);
+            if (id && id.toLowerCase().includes(substr.toLowerCase())) {
+              const v = core.getParameterValueById?.(id);
+              all.push({ index: i, id, value: v });
+            }
+          }
+        } catch {}
+        console.log("[iris.findParam]", all);
+        return all;
       },
     };
 
