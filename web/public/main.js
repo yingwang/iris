@@ -718,21 +718,15 @@ async function initFace() {
       if (newState === committedState) return;
       const prev = committedState;
       committedState = newState;
-      console.log(
-        `[face-transition] ${prev ?? "(none)"} → ${newState} (p=${presentScore} a=${awayScore})`
-      );
       // First commit is just the baseline — don't ping iris on the
       // initial "oh you have a face" detection.
       if (prev === null) return;
       // Rate-limit actual pings so a flaky camera doesn't spam iris.
       const now = Date.now();
-      if (now - lastEmitAt < 12000) {
-        console.log("[face-transition] rate-limited, skipping emit");
-        return;
-      }
+      if (now - lastEmitAt < 12000) return;
       lastEmitAt = now;
       const event = newState === "away" ? "left" : "returned";
-      console.log(`[face-transition] → server: ${event}`);
+      console.log(`[face-transition] ${prev} → ${newState} (${event})`);
       ws.send(JSON.stringify({ type: "face_transition", event }));
     }, 600);
   } catch (err) {
