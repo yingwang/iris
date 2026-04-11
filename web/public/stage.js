@@ -141,6 +141,38 @@ export class AvatarStage {
     try {
       const im = this.model.internalModel;
       if (im && typeof im.update === "function") {
+        // Also patch the Cubism core's update() — THAT'S the
+        // method that actually bakes parameter values into the
+        // vertex buffer each frame. If we only write in
+        // internalModel.update, our write happens AFTER the bake
+        // and sits unused in the parameter store until it's
+        // cleared by the next frame's motion manager. Patching
+        // coreModel.update lets us inject our value right before
+        // the bake so the visual actually changes.
+        const core = im.coreModel;
+        if (core && typeof core.update === "function") {
+          const origCoreUpdate = core.update.bind(core);
+          core.update = (...args) => {
+            try {
+              if (this.externalMouth > 0.01) {
+                core.setParameterValueById?.(
+                  "ParamMouthOpenY",
+                  this.externalMouth
+                );
+                // Also nudge ParamMouthForm additively (see below).
+                const curForm =
+                  core.getParameterValueById?.("ParamMouthForm") || 0;
+                const boost = Math.min(0.15, this.externalMouth * 0.25);
+                core.setParameterValueById?.(
+                  "ParamMouthForm",
+                  curForm + boost
+                );
+              }
+            } catch {}
+            return origCoreUpdate(...args);
+          };
+          console.log("[stage] patched coreModel.update for lip sync");
+        }
         const origUpdate = im.update.bind(im);
         let patchRunCount = 0;
         let patchWriteCount = 0;
@@ -299,6 +331,32 @@ export class AvatarStage {
       forceMouth(v = 0.8) {
         self.externalMouth = v;
         console.log("[iris.forceMouth] externalMouth =", v);
+      },
+      // Hammer-time diagnostic: every rAF frame, force-write the
+      // mouth param after yielding to the next frame. If THIS
+      // finally opens the mouth, timing was the issue and the
+      // coreModel.update patch should fix it. If even this
+      // doesn't open it, the parameter or range is wrong.
+      // Stop with `iris.unhold()`.
+      hold(v = 1, param = "ParamMouthOpenY") {
+        const core = self.model?.internalModel?.coreModel;
+        if (!core) return;
+        if (self._holdRAF) cancelAnimationFrame(self._holdRAF);
+        const loop = () => {
+          try {
+            core.setParameterValueById?.(param, v);
+          } catch {}
+          self._holdRAF = requestAnimationFrame(loop);
+        };
+        self._holdRAF = requestAnimationFrame(loop);
+        console.log(`[iris.hold] hammering ${param} = ${v}`);
+      },
+      unhold() {
+        if (self._holdRAF) {
+          cancelAnimationFrame(self._holdRAF);
+          self._holdRAF = null;
+          console.log("[iris.unhold] stopped");
+        }
       },
       // List all parameter IDs the current model exposes. Helps
       // confirm what the actual mouth-open parameter is called —
